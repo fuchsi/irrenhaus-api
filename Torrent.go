@@ -159,7 +159,7 @@ func (t *TorrentUpload) Upload() (error) {
 
 	metaWriter, err := bodyWriter.CreateFormFile("file", t.Name+".torrent")
 	if err != nil {
-		fmt.Println("error writing to buffer")
+		debugLog("error writing to buffer")
 		return err
 	}
 	_, err = io.Copy(metaWriter, t.Meta)
@@ -169,7 +169,7 @@ func (t *TorrentUpload) Upload() (error) {
 
 	nfoWriter, err := bodyWriter.CreateFormFile("nfo", t.Name+".nfo")
 	if err != nil {
-		fmt.Println("error writing to buffer")
+		debugLog("error writing to buffer")
 		return err
 	}
 	_, err = io.Copy(nfoWriter, t.Nfo)
@@ -179,7 +179,7 @@ func (t *TorrentUpload) Upload() (error) {
 
 	image1Writer, err := bodyWriter.CreateFormFile("pic1", t.Name+".jpg")
 	if err != nil {
-		fmt.Println("error writing to buffer")
+		debugLog("error writing to buffer")
 		return err
 	}
 	_, err = io.Copy(image1Writer, t.Image1)
@@ -190,7 +190,7 @@ func (t *TorrentUpload) Upload() (error) {
 	if t.Image2 != nil {
 		image2Writer, err := bodyWriter.CreateFormFile("pic1", t.Name+"_2"+".jpg")
 		if err != nil {
-			fmt.Println("error writing to buffer")
+			debugLog("error writing to buffer")
 			return err
 		}
 		_, err = io.Copy(image2Writer, t.Image2)
@@ -282,7 +282,7 @@ func Search(c *Connection, needle string, categories []int, dead bool) ([]Torren
 			}
 		}
 
-		//fmt.Println("Pages: ", maxpage)
+		//debugLog("Pages: ", maxpage)
 
 		for p := int64(1); p <= maxpage; p++ {
 			data.Set("page", fmt.Sprintf("%d", p))
@@ -295,10 +295,10 @@ func Search(c *Connection, needle string, categories []int, dead bool) ([]Torren
 		select {
 		case torrent := <-chTorrents:
 			foundTorrents[torrent.Id] = torrent
-			//fmt.Println("found torrent:", torrent.Id)
+			//debugLog("found torrent:", torrent.Id)
 		case <-chFinished:
 			p++
-			//fmt.Println("finished a parser. now at", p, "of", maxpage)
+			//debugLog("finished a parser. now at", p, "of", maxpage)
 		}
 	}
 
@@ -314,7 +314,7 @@ func Search(c *Connection, needle string, categories []int, dead bool) ([]Torren
 
 func crawlTorrentList(c *Connection, url string, page int64, chTorrents chan TorrentEntry, chFinished chan bool) {
 	resp, err := c.get(url)
-	//fmt.Println("Crawl Page:", page)
+	//debugLog("Crawl Page:", page)
 
 	defer func() {
 		// Notify that we're done after this function
@@ -322,7 +322,7 @@ func crawlTorrentList(c *Connection, url string, page int64, chTorrents chan Tor
 	}()
 
 	if err != nil {
-		fmt.Println("ERROR: Failed to crawl \"" + url + "\"")
+		debugLog("ERROR: Failed to crawl \"" + url + "\"")
 		return
 	}
 
@@ -333,7 +333,7 @@ func crawlTorrentList(c *Connection, url string, page int64, chTorrents chan Tor
 }
 
 func parseTorrentList(body io.Reader, ch chan TorrentEntry) {
-	//fmt.Println("Parsing Torrent List")
+	//debugLog("Parsing Torrent List")
 	z := html.NewTokenizer(body)
 	isInTorrentTable := false
 	isInTorrentEntry := false
@@ -341,7 +341,7 @@ func parseTorrentList(body io.Reader, ch chan TorrentEntry) {
 
 	for {
 		tt := z.Next()
-		//fmt.Println("tt:", tt)
+		//debugLog("tt:", tt)
 
 		switch {
 		case tt == html.ErrorToken:
@@ -353,7 +353,7 @@ func parseTorrentList(body io.Reader, ch chan TorrentEntry) {
 			if !isInTorrentTable && !checkIfNextIsTyp {
 				// Check if the token is an <td> tag
 				isTd := t.Data == "td"
-				//fmt.Println("t.Data =", t.Data, "isTd:", isTd)
+				//debugLog("t.Data =", t.Data, "isTd:", isTd)
 				if !isTd {
 					continue
 				}
@@ -365,19 +365,19 @@ func parseTorrentList(body io.Reader, ch chan TorrentEntry) {
 						continue
 					}
 					if class == "tablecat" {
-						//fmt.Println("found <td class=\"tablecat\">")
+						//debugLog("found <td class=\"tablecat\">")
 						checkIfNextIsTyp = true
 					}
 				}
 			} else if isInTorrentTable {
 				if t.Data == "tr" {
-					//fmt.Println("In Torrent Table. Found <tr>")
+					//debugLog("In Torrent Table. Found <tr>")
 					isInTorrentEntry = true
 					torrentEntry, err := parseTorrentEntry(z)
 					if err != nil {
-						fmt.Println("ERROR while parsing the torrent entry:", err.Error())
+						debugLog("ERROR while parsing the torrent entry:", err.Error())
 					}
-					//fmt.Println(torrentEntry)
+					//debugLog(torrentEntry)
 					ch <- torrentEntry
 				}
 			}
@@ -397,7 +397,7 @@ func parseTorrentList(body io.Reader, ch chan TorrentEntry) {
 			t := z.Token()
 			if checkIfNextIsTyp {
 				if t.Data == "Typ" {
-					//fmt.Println("Found 'Typ'. Now in Torrent Table")
+					//debugLog("Found 'Typ'. Now in Torrent Table")
 					checkIfNextIsTyp = false
 					isInTorrentTable = true
 				}
@@ -408,7 +408,7 @@ func parseTorrentList(body io.Reader, ch chan TorrentEntry) {
 
 func parseTorrentEntry(z *html.Tokenizer) (TorrentEntry, error) {
 	te := TorrentEntry{}
-	//fmt.Println("Parsing Torrent Entry")
+	//debugLog("Parsing Torrent Entry")
 
 	z.Next() // typ td
 	z.Next() // typ anchor
@@ -710,7 +710,7 @@ func Details(c *Connection, id int64, files bool, peers bool, snatches bool) (To
 				}
 			}
 
-			//fmt.Println("Pages: ", maxpage)
+			//debugLog("Pages: ", maxpage)
 
 			for p := int64(1); p <= maxpage; p++ {
 				data.Set("page", fmt.Sprintf("%d", p))
@@ -723,10 +723,10 @@ func Details(c *Connection, id int64, files bool, peers bool, snatches bool) (To
 			select {
 			case snatch := <-chSnatch:
 				foundSnatches[snatch.Name] = snatch
-				//fmt.Println("found torrent:", torrent.Id)
+				//debugLog("found torrent:", torrent.Id)
 			case <-chFinished:
 				p++
-				//fmt.Println("finished a parser. now at", p, "of", maxpage)
+				//debugLog("finished a parser. now at", p, "of", maxpage)
 			}
 		}
 
@@ -1291,7 +1291,7 @@ Loop:
 
 func crawlSnatchList(c *Connection, url string, page int64, chSnatch chan Snatch, chFinished chan bool) {
 	resp, err := c.get(url)
-	//fmt.Println("Crawl Page:", page)
+	//debugLog("Crawl Page:", page)
 
 	defer func() {
 		// Notify that we're done after this function
@@ -1299,7 +1299,7 @@ func crawlSnatchList(c *Connection, url string, page int64, chSnatch chan Snatch
 	}()
 
 	if err != nil {
-		fmt.Println("ERROR: Failed to crawl \"" + url + "\"")
+		debugLog("ERROR: Failed to crawl \"" + url + "\"")
 		return
 	}
 
@@ -1399,7 +1399,7 @@ InnerLoop:
 					} else {
 						temp, err := strconv.ParseFloat(t.Data, 64)
 						if err != nil {
-							fmt.Println(err.Error())
+							debugLog(err.Error())
 							temp = 0.0
 						}
 						snatch.Ratio = temp

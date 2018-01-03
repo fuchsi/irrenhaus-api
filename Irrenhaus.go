@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -30,7 +31,7 @@ import (
 	"time"
 )
 
-var DEBUG = true
+var DEBUG = false
 
 type Connection struct {
 	url     string
@@ -86,7 +87,7 @@ func (c Connection) buildUrl(url string, values url.Values) (string) {
 }
 
 func (c *Connection) Login() (error) {
-	fmt.Println("logging in")
+	debugLog("[Login] Logging in")
 	resp, err := c.postForm(c.buildUrl("takelogin.php", nil), url.Values{"username": {c.username}, "password": {c.password}, "pin": {c.pin}})
 
 	if err != nil {
@@ -100,7 +101,6 @@ func (c *Connection) Login() (error) {
 	}
 
 	for _, cookie := range resp.Cookies() {
-		//fmt.Println("Cookie:", cookie.Name)
 		switch cookie.Name {
 		case "uid":
 			c.cookies.Uid, _ = strconv.ParseInt(cookie.Value, 10, 64)
@@ -111,7 +111,7 @@ func (c *Connection) Login() (error) {
 		}
 	}
 
-	//fmt.Println("logged in")
+	debugLog("[Login] Logged in")
 
 	return nil
 }
@@ -201,31 +201,38 @@ func debugRequest(resp *http.Response, body string) {
 	if !DEBUG {
 		return
 	}
-	fmt.Printf("> %s %s://%s%s\n", resp.Request.Method, resp.Request.URL.Scheme, resp.Request.Host, resp.Request.URL.RequestURI())
-	fmt.Println("Request:")
+	log.Printf("> %s %s://%s%s\n", resp.Request.Method, resp.Request.URL.Scheme, resp.Request.Host, resp.Request.URL.RequestURI())
+	log.Println("Request:")
 	if resp.Request.Method == "POST" {
 		for key, value := range resp.Request.Form {
-			fmt.Printf("    %s: %s\n", key, value)
+			log.Printf("    %s: %s\n", key, value)
 		}
 	}
 
 	for key, header := range resp.Request.Header {
-		fmt.Printf("    %s: %s\n", key, header)
+		log.Printf("    %s: %s\n", key, header)
 	}
 
-	fmt.Println("Response:")
-	fmt.Println("  Status Code:", resp.StatusCode)
-	fmt.Println("  Status:", resp.Status)
+	log.Println("Response:")
+	log.Println("  Status Code:", resp.StatusCode)
+	log.Println("  Status:", resp.Status)
 	for key, header := range resp.Header {
-		fmt.Printf("    %s: %s\n", key, header)
+		log.Printf("    %s: %s\n", key, header)
 	}
 
 	if resp.Header.Get("Content-Type") == "application/x-bittorrent" {
-		fmt.Println("[body ommited]")
+		log.Println("[body ommited]")
 	} else {
-		fmt.Println("[body truncated]")
-		fmt.Println(keepLines(body, 3))
+		log.Println("[body truncated]")
+		log.Println(keepLines(body, 3))
 	}
 
-	fmt.Println("")
+	log.Println("")
+}
+
+func debugLog(a ...interface{}) {
+	if !DEBUG {
+		return
+	}
+	log.Println(a)
 }

@@ -26,7 +26,7 @@ import (
 	"strings"
 )
 
-func WriteComment(c *Connection, id int64, message string) (bool, error) {
+func CommentWrite(c *Connection, id int64, message string) (bool, error) {
 	c.assureLogin()
 
 	data := url.Values{}
