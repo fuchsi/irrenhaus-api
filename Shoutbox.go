@@ -27,7 +27,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/djimenez/iconv-go"
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/transform"
 )
 
 type ShoutboxMessage struct {
@@ -55,10 +56,7 @@ func ShoutboxRead(c *Connection, shoutId int, lastMessageId int64) ([]ShoutboxMe
 	}
 
 	defer resp.Body.Close()
-	rd, err := iconv.NewReader(resp.Body, "ISO-8859-1", "utf-8")
-	if err != nil {
-		return nil, err
-	}
+	rd := transform.NewReader(resp.Body, charmap.ISO8859_1.NewDecoder())
 	body, err := ioutil.ReadAll(rd)
 	debugRequest(resp, string(body))
 	if len(body) <= 1 {
@@ -66,7 +64,7 @@ func ShoutboxRead(c *Connection, shoutId int, lastMessageId int64) ([]ShoutboxMe
 	}
 
 	messages := make([]ShoutboxMessage, 0)
-	jsonMsg  := make([][]string, 0)
+	jsonMsg := make([][]string, 0)
 	err = json.Unmarshal(body, &jsonMsg)
 	if err != nil {
 		return nil, err
@@ -90,10 +88,10 @@ func ShoutboxRead(c *Connection, shoutId int, lastMessageId int64) ([]ShoutboxMe
 		}
 		strMsg := ShoutboxStrip(jmsg[5])
 		msg := ShoutboxMessage{
-			Id: id,
-			UserId: int(uid),
-			User: jmsg[4],
-			Date: date,
+			Id:      id,
+			UserId:  int(uid),
+			User:    jmsg[4],
+			Date:    date,
 			Message: strMsg,
 		}
 
@@ -150,14 +148,11 @@ func ShoutboxWrite(c *Connection, shoutId int, message string) (bool, error) {
 	}
 
 	defer resp.Body.Close()
-	rd, err := iconv.NewReader(resp.Body, "ISO-8859-1", "utf-8")
-	if err != nil {
-		return false, err
-	}
+	rd := transform.NewReader(resp.Body, charmap.ISO8859_1.NewDecoder())
 	body, err := ioutil.ReadAll(rd)
 	debugRequest(resp, string(body))
 
-	jsonMsg  := make([][]string, 0)
+	jsonMsg := make([][]string, 0)
 	err = json.Unmarshal(body, &jsonMsg)
 	if err != nil {
 		return false, err
@@ -189,13 +184,13 @@ func shoutboxRegexpInit() {
 	shoutboxRegexp["italic"], _ = regexp.Compile("<i>(.+)</i>")
 	shoutboxRegexp["underline"], _ = regexp.Compile("<u>(.+)</u>")
 	shoutboxRegexp["img"], _ = regexp.Compile("<img src=\"([^\"]+)\" alt=\"\" border=\"0\">")
-	shoutboxRegexp["img2"], _ = regexp.Compile("<img src=\"(/pic/smilies/.+)\" border=\"0\" alt=\"(.+)\">")
+	shoutboxRegexp["img2"], _ = regexp.Compile("<img src=\"(/pic/smilies/[^\"]+)\" border=\"0\" alt=\"([^\"]+)\">")
 	shoutboxRegexp["img3"], _ = regexp.Compile("<img border=\"0\" src=\"([^\"]+)\" alt=\"\">")
 	shoutboxRegexp["color"], _ = regexp.Compile("<font color=\"?([a-zA-Z]+|#[0-9a-fA-F]+)\"?>(.+?)</font>")
 	shoutboxRegexp["link"], _ = regexp.Compile("<a href=\"(https?://[^\"]+)\"(:? target=\"([^\"]+)\")?>(.+)</a>")
 	shoutboxRegexp["link2"], _ = regexp.Compile("<a href=\"(/[^\"]+)\"(:? target=\"([^\"]+)\")?>(.+)</a>")
 	shoutboxRegexp["size"], _ = regexp.Compile("<font size=\"?(\\d+)\"?>(.+)</font>")
-	shoutboxRegexp["font"], _ = regexp.Compile("<font face=\"(.+)\">(.+)</font>")
+	shoutboxRegexp["font"], _ = regexp.Compile("<font face=\"([^\"]+)\">(.+)</font>")
 	shoutboxRegexp["nfo"], _ = regexp.Compile("<tt><nobr><font face=\"MS Linedraw\" size=\"2\" style=\"font-size: 10pt; line-height: 10pt\">(.+)</font></nobr></tt>")
 	shoutboxRegexp["pre"], _ = regexp.Compile("<tt><nobr>(.+)</nobr></tt>")
 	shoutboxRegexp["hxxp"], _ = regexp.Compile("hxxp(s)?://([^ ]+)")
