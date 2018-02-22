@@ -78,3 +78,9 @@ func ToString(id int) (string, error) {
 
 	return "", errors.New("category id not found")
 }
+
+func GetCategories() map[int]string {
+	initCategories()
+
+	return categories
+}

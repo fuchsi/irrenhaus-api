@@ -145,7 +145,7 @@ func NewUpload(c *Connection, meta io.Reader, nfo io.Reader, image io.Reader, na
 	return t, nil
 }
 
-func (t *TorrentUpload) Upload() (error) {
+func (t *TorrentUpload) Upload() error {
 	if err := t.c.assureLogin(); err != nil {
 		return err
 	}
@@ -543,7 +543,7 @@ func parseTorrentEntry(z *html.Tokenizer) (TorrentEntry, error) {
 		return te, err
 	}
 	// part after the ','
-	size2, err := strconv.ParseInt(t.Data[(commaIndex + 1):], 10, 32)
+	size2, err := strconv.ParseInt(t.Data[(commaIndex+1):], 10, 32)
 	if err != nil {
 		return te, err
 	}
@@ -1268,7 +1268,7 @@ Loop:
 				file.Name = t.Data
 			case 2:
 				file.Size = stringToDatasize(t.Data)
-		}
+			}
 		case tt == html.EndTagToken:
 			t := z.Token()
 			if t.Data == "table" {
@@ -1309,19 +1309,19 @@ func crawlSnatchList(c *Connection, url string, page int64, chSnatch chan Snatch
 	parseSnatches(b, chSnatch)
 }
 
-func parseSnatches(reader io.Reader, ch chan Snatch) () {
+func parseSnatches(reader io.Reader, ch chan Snatch) {
 	z := html.NewTokenizer(reader)
 
 	tdCounter := 0
 	skipTr := true
 	snatch := Snatch{
-		Name: "",
-		Completed: time.Unix(0, 0),
-		Ratio: 0.0,
+		Name:       "",
+		Completed:  time.Unix(0, 0),
+		Ratio:      0.0,
 		Downloaded: 0,
-		Uploaded: 0,
-		Stopped: time.Unix(0, 0),
-		Seeding: false,
+		Uploaded:   0,
+		Stopped:    time.Unix(0, 0),
+		Seeding:    false,
 	}
 
 	isInSnatchesTable := false
@@ -1432,13 +1432,13 @@ InnerLoop:
 			} else if t.Data == "tr" {
 				ch <- snatch
 				snatch = Snatch{
-					Name: "",
-					Completed: time.Unix(0, 0),
-					Ratio: 0.0,
+					Name:       "",
+					Completed:  time.Unix(0, 0),
+					Ratio:      0.0,
 					Downloaded: 0,
-					Uploaded: 0,
-					Stopped: time.Unix(0, 0),
-					Seeding: false,
+					Uploaded:   0,
+					Stopped:    time.Unix(0, 0),
+					Seeding:    false,
 				}
 				tdCounter = -1
 			}
@@ -1496,7 +1496,7 @@ func getAttr(t html.Token, attr string) (ok bool, val string) {
 	return
 }
 
-func stringToDatasize(str string) (uint64) {
+func stringToDatasize(str string) uint64 {
 	temp := strings.Split(str, " ")
 	if len(temp) == 1 {
 		return 0
