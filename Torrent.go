@@ -680,7 +680,7 @@ func parseTorrentDetails(reader io.Reader, files, peers bool) (*TorrentEntry, er
 	if err == nil {
 		// strip all html tags, i think we can use the shoutbox function for this task
 
-		description = ShoutboxStrip(rawDescription)
+		description = ShoutboxStrip(rawDescription, "")
 	}
 	te.Description = description
 

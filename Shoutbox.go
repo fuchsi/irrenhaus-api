@@ -35,12 +35,36 @@ import (
 	"golang.org/x/text/transform"
 )
 
+// Unnamed events are still unknown
+const (
+	ShoutboxEventNone = 0
+	ShoutboxEvent1    = 1
+	// if set, unread message count is in data[1]
+	ShoutboxEventUserMessage = 2
+	ShoutboxEvent4           = 4
+	ShoutboxEvent8           = 8
+	ShoutboxEvent16          = 16
+	ShoutboxEvent32          = 32
+	// if set, one of the following to operations are possible
+	// simple message delete: data[3] contains 'del,ID1,ID2,...' indicating which message should be deleted
+	// clear entire chat: data[3] is 'clear'
+	ShoutboxEventDeleteEntry = 64
+)
+
 type ShoutboxMessage struct {
 	Id      int64
 	User    string
 	UserId  int
 	Date    time.Time
 	Message string
+
+	Event *ShoutboxEvent
+}
+
+type ShoutboxEvent struct {
+	Type int
+	ID   int
+	Data []string
 }
 
 var shoutboxRegexp map[string]*regexp.Regexp
@@ -81,7 +105,33 @@ func ShoutboxRead(c *Connection, shoutId int, lastMessageId int64) ([]ShoutboxMe
 		return nil, err
 	}
 
-	for _, jmsg := range jsonMsg {
+	for i, jmsg := range jsonMsg {
+		// control messages
+		if i == 0 {
+			eventType, err := strconv.ParseInt(jmsg[0], 10, 32)
+			if err != nil {
+				debugLog("[ShoutboxRead]", err.Error())
+			}
+			eventID, err := strconv.ParseInt(jmsg[1], 10, 32)
+			if err != nil {
+				debugLog("[ShoutboxRead]", err.Error())
+			}
+			eventData := make([]string, 4)
+			eventData[0] = jmsg[2]
+			eventData[1] = jmsg[3]
+			eventData[2] = jmsg[4]
+			eventData[3] = jmsg[5]
+
+			event := ShoutboxEvent{
+				Type: int(eventType),
+				ID:   int(eventID),
+				Data: eventData,
+			}
+
+			message := ShoutboxMessage{Event: &event}
+			messages = append(messages, message)
+			continue
+		}
 		if jmsg[0] == "" {
 			continue
 		}
@@ -102,7 +152,7 @@ func ShoutboxRead(c *Connection, shoutId int, lastMessageId int64) ([]ShoutboxMe
 			debugLog("unsuppored message type:" + messageType)
 			continue
 		}
-		strMsg := ShoutboxStrip(jmsg[5])
+		strMsg := ShoutboxStrip(jmsg[5], c.url)
 		msg := ShoutboxMessage{
 			Id:      id,
 			UserId:  int(uid),
@@ -123,7 +173,7 @@ func ShoutboxRead(c *Connection, shoutId int, lastMessageId int64) ([]ShoutboxMe
 }
 
 // Strip the HTML / format code from the message
-func ShoutboxStrip(msg string) (stripped string) {
+func ShoutboxStrip(msg, url string) (stripped string) {
 	if len(shoutboxRegexp) == 0 {
 		shoutboxRegexpInit()
 	}
@@ -137,7 +187,7 @@ func ShoutboxStrip(msg string) (stripped string) {
 	stripped = shoutboxRegexp["img3"].ReplaceAllString(stripped, "$1")
 	stripped = shoutboxRegexp["color"].ReplaceAllString(stripped, "$2")
 	stripped = shoutboxRegexp["link"].ReplaceAllString(stripped, "$4 [$1]")
-	stripped = shoutboxRegexp["link2"].ReplaceAllString(stripped, "$4 [https://irrenhaus.dyndns.dk$1]") // fix hardcoded url
+	stripped = shoutboxRegexp["link2"].ReplaceAllString(stripped, fmt.Sprintf("$4 [%s$1]", url)) // fix hardcoded url
 	stripped = shoutboxRegexp["size"].ReplaceAllString(stripped, "$2")
 	stripped = shoutboxRegexp["font"].ReplaceAllString(stripped, "$2")
 	stripped = shoutboxRegexp["nfo"].ReplaceAllString(stripped, "$1")
