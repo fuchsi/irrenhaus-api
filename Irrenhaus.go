@@ -52,7 +52,7 @@ type Cookies struct {
 	Passhash string
 }
 
-func NewConnection(url string, username string, password string, pin string) (Connection) {
+func NewConnection(url string, username string, password string, pin string) Connection {
 	c := Connection{url: url, userAgent: "irrenhaus-api client", username: username, password: password, pin: pin}
 	c.client = &http.Client{Timeout: time.Second * 10}
 	c.cookies = Cookies{Uid: 0, Pass: "", Passhash: ""}
@@ -68,7 +68,7 @@ func (c *Connection) SetUserAgent(userAgent string) {
 	c.userAgent = userAgent
 }
 
-func (c Connection) GetCookies() (Cookies) {
+func (c Connection) GetCookies() Cookies {
 	return c.cookies
 }
 
@@ -76,7 +76,7 @@ func (c *Connection) SetCookies(cookies Cookies) {
 	c.cookies = cookies
 }
 
-func (c Connection) buildUrl(url string, values url.Values) (string) {
+func (c Connection) buildUrl(url string, values url.Values) string {
 	if url[0] != '/' {
 		url = "/" + url
 	}
@@ -86,7 +86,7 @@ func (c Connection) buildUrl(url string, values url.Values) (string) {
 	return c.url + url
 }
 
-func (c *Connection) Login() (error) {
+func (c *Connection) Login() error {
 	debugLog("[Login] Logging in")
 	resp, err := c.postForm(c.buildUrl("takelogin.php", nil), url.Values{"username": {c.username}, "password": {c.password}, "pin": {c.pin}})
 
@@ -154,7 +154,7 @@ func (c Connection) newRequest(method, url string, body io.Reader) (*http.Reques
 	return req, nil
 }
 
-func (c *Connection) assureLogin() (error) {
+func (c *Connection) assureLogin() error {
 	resp, err := c.get(c.buildUrl("/my.php", nil))
 	if err != nil {
 		return err
