@@ -18,7 +18,9 @@
 package irrenhaus_api
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io/ioutil"
@@ -70,6 +72,9 @@ func ShoutboxRead(c *Connection, shoutId int, lastMessageId int64) ([]ShoutboxMe
 	jsonMsg := make([][]string, 0)
 	err = json.Unmarshal(body, &jsonMsg)
 	if err != nil {
+		if bytes.ContainsAny(body, "Die Serverlast ist Momentan zu hoch") {
+			return nil, errors.New("serverload")
+		}
 		DEBUG = true
 		debugRequest(resp, string(body))
 		DEBUG = false
@@ -139,7 +144,10 @@ func ShoutboxStrip(msg string) (stripped string) {
 	stripped = shoutboxRegexp["pre"].ReplaceAllString(stripped, "$1")
 	stripped = shoutboxRegexp["hxxp"].ReplaceAllString(stripped, "http$1://$2")
 
-	stripped = strings.Replace(stripped, "<br>", "\n", -1)
+	stripped = strings.Replace(stripped, "<br>\n", "\n", -1)
+	stripped = strings.Replace(stripped, "<br>", "", -1)
+	stripped = strings.Replace(stripped, "<br/>\n", "\n", -1)
+	stripped = strings.Replace(stripped, "<br/>", "", -1)
 	stripped = strings.Replace(stripped, "&nbsp;", " ", -1)
 
 	stripped = html.UnescapeString(stripped)
