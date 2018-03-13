@@ -30,11 +30,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
+
+	"github.com/PuerkitoBio/goquery"
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/transform"
 
 	"github.com/c2h5oh/datasize"
 	"github.com/fuchsi/irrenhaus-api/Category"
-	"golang.org/x/net/html"
+)
+
+const (
+	pageErrorUploadFailed = "TorrentUpload-Upload fehlgeschlagen!"
 )
 
 type TorrentUpload struct {
@@ -213,24 +219,48 @@ func (t *TorrentUpload) Upload() error {
 		return errors.New("upload failed: 404")
 	}
 
-	if strings.Contains(sbody, "TorrentUpload-Upload fehlgeschlagen!") {
-		errorMsg := "unknown error"
-		re, _ := regexp.Compile("Beim Upload ist ein schwerwiegender Fehler aufgetreten:</p><p.*>(.+)</p>")
-		if re.MatchString(sbody) {
-			errorMsg = re.FindStringSubmatch(sbody)[1]
+	uploadFailed := false
+
+	doc, err := goquery.NewDocumentFromResponse(resp)
+	sel := doc.Find(".centeredtitle span")
+	for i := range sel.Nodes {
+		node := sel.Eq(i)
+		if node.Text() == pageErrorUploadFailed {
+			uploadFailed = true
+			break
 		}
+	}
+
+	if uploadFailed {
+		var errorMsg string
+
+		sel = doc.Find("p+p[style=color:red]")
+		if len(sel.Nodes) > 0 {
+			node := sel.Eq(0)
+			errorMsg = node.Text()
+		}
+
+		if errorMsg == "" {
+			errorMsg = "unknown error"
+		}
+
 		return errors.New("upload failed: " + errorMsg)
 	}
 
-	re, _ := regexp.Compile("<a href=\"details\\.php\\?id=(\\d+)\">Weiter zu den Details Deines Torrents</a>")
-	if re.MatchString(sbody) {
-		t.Id, err = strconv.ParseInt(re.FindStringSubmatch(sbody)[1], 10, 64)
-		if err != nil {
-			return err
+	sel = doc.Find("a[href^=details.php]")
+	if len(sel.Nodes) > 0 {
+		link := sel.Eq(0)
+		href, _ := link.Attr("href")
+		re, _ := regexp.Compile("details\\.php\\?id=(\\d+)")
+		if re.MatchString(href) {
+			t.Id, err = strconv.ParseInt(re.FindStringSubmatch(sbody)[1], 10, 64)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
-	return nil
+	return errors.New("upload failed")
 }
 
 func Search(c *Connection, needle string, categories []int, dead bool) ([]TorrentEntry, error) {
@@ -272,22 +302,30 @@ func Search(c *Connection, needle string, categories []int, dead bool) ([]Torren
 		parseTorrentList(reader, chTorrents)
 	}(reader, chTorrents, chFinished)
 
-	re, _ := regexp.Compile("<a href=\"(.+&page=(\\d+))\".*>")
-	if re.MatchString(string(body)) {
-		matches := re.FindAllStringSubmatch(string(body), -1)
+	doc, err := goquery.NewDocumentFromResponse(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	re, _ := regexp.Compile("page=(\\d+)")
+	sel := doc.Find("p[align=center] a")
+	for i := range sel.Nodes {
+		node := sel.Eq(i)
+		href, _ := node.Attr("href")
+		matches := re.FindAllStringSubmatch(href, -1)
 		for _, m := range matches {
-			page, _ := strconv.ParseInt(m[2], 10, 32)
+			page, _ := strconv.ParseInt(m[1], 10, 32)
 			if page > maxpage {
 				maxpage = page
 			}
 		}
+	}
 
-		//debugLog("Pages: ", maxpage)
-
+	if maxpage > 0 {
 		for p := int64(1); p <= maxpage; p++ {
 			data.Set("page", fmt.Sprintf("%d", p))
-			pageUrl := c.buildUrl("/browse.php", data)
-			go crawlTorrentList(c, pageUrl, p, chTorrents, chFinished)
+			pageURL := c.buildUrl("/browse.php", data)
+			go crawlTorrentList(c, pageURL, p, chTorrents, chFinished)
 		}
 	}
 
@@ -333,89 +371,40 @@ func crawlTorrentList(c *Connection, url string, page int64, chTorrents chan Tor
 }
 
 func parseTorrentList(body io.Reader, ch chan TorrentEntry) {
-	//debugLog("Parsing Torrent List")
-	z := html.NewTokenizer(body)
-	isInTorrentTable := false
-	isInTorrentEntry := false
-	checkIfNextIsTyp := false
+	debugLog("Parsing Torrent List")
 
-	for {
-		tt := z.Next()
-		//debugLog("tt:", tt)
-
-		switch {
-		case tt == html.ErrorToken:
-			// End of the document, we're done
-			return
-		case tt == html.StartTagToken:
-			t := z.Token()
-
-			if !isInTorrentTable && !checkIfNextIsTyp {
-				// Check if the token is an <td> tag
-				isTd := t.Data == "td"
-				//debugLog("t.Data =", t.Data, "isTd:", isTd)
-				if !isTd {
-					continue
-				}
-
-				if !isInTorrentEntry {
-					// Check if the css class is "tablecat"
-					ok, class := getCssClass(t)
-					if !ok {
-						continue
-					}
-					if class == "tablecat" {
-						//debugLog("found <td class=\"tablecat\">")
-						checkIfNextIsTyp = true
-					}
-				}
-			} else if isInTorrentTable {
-				if t.Data == "tr" {
-					//debugLog("In Torrent Table. Found <tr>")
-					isInTorrentEntry = true
-					torrentEntry, err := parseTorrentEntry(z)
-					if err != nil {
-						debugLog("ERROR while parsing the torrent entry:", err.Error())
-					}
-					//debugLog(torrentEntry)
-					ch <- torrentEntry
-				}
-			}
-		case tt == html.EndTagToken:
-			t := z.Token()
-			if isInTorrentTable {
-				if t.Data == "table" {
-					isInTorrentTable = false
-				}
-				if isInTorrentEntry {
-					if t.Data == "tr" {
-						isInTorrentEntry = false
-					}
-				}
-			}
-		case tt == html.TextToken:
-			t := z.Token()
-			if checkIfNextIsTyp {
-				if t.Data == "Typ" {
-					//debugLog("Found 'Typ'. Now in Torrent Table")
-					checkIfNextIsTyp = false
-					isInTorrentTable = true
-				}
-			}
-		}
+	doc, err := goquery.NewDocumentFromReader(body)
+	if err != nil {
+		return
 	}
+	doc.Find("table.tableinborder").Each(func(i int, s *goquery.Selection) {
+		firstTd := s.Find("td").First()
+		if firstTd.Text() != "Typ" {
+			return
+		}
+		s.Find("tr").Each(func(i int, s *goquery.Selection) {
+			if i == 0 {
+				return
+			}
+			torrentEntry, err := parseTorrentEntry(s)
+			if err != nil {
+				debugLog("ERROR while parsing the torrent entry:", err.Error())
+				return
+			}
+			//debugLog(torrentEntry)
+			ch <- torrentEntry
+		})
+	})
 }
 
-func parseTorrentEntry(z *html.Tokenizer) (TorrentEntry, error) {
+func parseTorrentEntry(s *goquery.Selection) (TorrentEntry, error) {
 	te := TorrentEntry{}
-	//debugLog("Parsing Torrent Entry")
+	debugLog("Parsing Torrent Entry")
 
-	z.Next() // typ td
-	z.Next() // typ anchor
+	tds := s.Find("td")
 
 	// Category
-	t := z.Token()
-	ok, href := getAttr(t, "href")
+	href, ok := tds.Eq(0).Find("a").First().Attr("href")
 	if !ok {
 		return te, errors.New("typ is missing href attr")
 	}
@@ -428,17 +417,9 @@ func parseTorrentEntry(z *html.Tokenizer) (TorrentEntry, error) {
 		te.Category = int(cat)
 	}
 
-	// loop until next anchor tag
-	for {
-		tt := z.Next()
-		t = z.Token()
-		if tt == html.StartTagToken && t.Data == "a" {
-			break
-		}
-	}
-
 	// ID
-	ok, href = getAttr(t, "href")
+	link := tds.Eq(1).Find("a").First()
+	href, ok = link.Attr("href")
 	if !ok {
 		return te, errors.New("name is missing href attr")
 	}
@@ -450,100 +431,44 @@ func parseTorrentEntry(z *html.Tokenizer) (TorrentEntry, error) {
 		}
 		te.Id = int(id)
 	}
-
-	z.Next() // name b
-	z.Next() // name text
-
-	// Name
-	t = z.Token()
-	te.Name = t.Data
-
-	// loop until next anchor tag
-	for {
-		tt := z.Next()
-		t = z.Token()
-		if tt == html.StartTagToken && t.Data == "a" {
-			break
-		}
+	name, ok := link.Attr("title")
+	if !ok {
+		name = link.Text()
 	}
+	te.Name = name
 
 	// Files
-	z.Next()
-	t = z.Token()
-	files, err := strconv.ParseInt(t.Data, 10, 32)
+
+	files, err := strconv.ParseInt(tds.Eq(2).Find("a").First().Text(), 10, 32)
 	if err != nil {
 		return te, err
 	}
 	te.FileCount = int(files)
 
-	// loop until next anchor tag
-	for {
-		tt := z.Next()
-		t = z.Token()
-		if tt == html.StartTagToken && t.Data == "a" {
-			break
-		}
-	}
-
 	// Comments
-	z.Next()
-	t = z.Token()
-	comments, err := strconv.ParseInt(t.Data, 10, 32)
+	comments, err := strconv.ParseInt(tds.Eq(3).Find("a").First().Text(), 10, 32)
 	if err != nil {
 		return te, err
 	}
 	te.CommentCount = int(comments)
 
-	// loop until next td tag
-	for {
-		tt := z.Next()
-		t = z.Token()
-		if tt == html.StartTagToken && t.Data == "td" {
-			break
-		}
-	}
-
 	// Added date/time
-	z.Next() // Date
-	t = z.Token()
-	adt := t.Data
-	z.Next() // br
-	z.Next() // Time
-	t = z.Token()
-	adt += " " + t.Data
-	te.Added, err = time.Parse("02.01.2006 15:04:05", adt)
+	addedTimestamp := tds.Eq(4).Text()
+	te.Added, err = time.Parse("02.01.200615:04:05", addedTimestamp)
 	if err != nil {
 		return te, err
 	}
 
-	// loop until next td tag
-	for {
-		tt := z.Next()
-		t = z.Token()
-		if tt == html.StartTagToken && t.Data == "td" {
-			break
-		}
-	}
-	// loop until next td tag
-	for {
-		tt := z.Next()
-		t = z.Token()
-		if tt == html.StartTagToken && t.Data == "td" {
-			break
-		}
-	}
-
 	// Size
-	z.Next()
-	t = z.Token()
-	commaIndex := strings.IndexByte(t.Data, ',')
+	rawSize := tds.Eq(6).Text()
+	commaIndex := strings.IndexByte(rawSize, ',')
 	// get the part before the ','
-	size, err := strconv.ParseInt(t.Data[0:commaIndex], 10, 32)
+	size, err := strconv.ParseInt(rawSize[0:commaIndex], 10, 32)
 	if err != nil {
 		return te, err
 	}
 	// part after the ','
-	size2, err := strconv.ParseInt(t.Data[(commaIndex+1):], 10, 32)
+	size2, err := strconv.ParseInt(rawSize[(commaIndex+1):(commaIndex+3)], 10, 32)
 	if err != nil {
 		return te, err
 	}
@@ -552,11 +477,7 @@ func parseTorrentEntry(z *html.Tokenizer) (TorrentEntry, error) {
 	size += size2
 	realsize := float64(size) / 100
 
-	z.Next() // br
-	z.Next() // size suffix
-	t = z.Token()
-
-	switch t.Data {
+	switch rawSize[(commaIndex + 3):] {
 	case "KB":
 		realsize *= float64(datasize.KB)
 	case "MB":
@@ -572,80 +493,41 @@ func parseTorrentEntry(z *html.Tokenizer) (TorrentEntry, error) {
 	}
 	te.Size = uint64(realsize)
 
-	// loop until next anchor tag
-	for {
-		tt := z.Next()
-		t = z.Token()
-		if tt == html.StartTagToken && t.Data == "a" {
-			break
-		}
-	}
-
 	// Snatch Count
-	z.Next() // text in a
-	t = z.Token()
-	snatches, err := strconv.ParseInt(t.Data, 10, 32)
+	snatches, err := strconv.ParseInt(tds.Eq(8).Find("a").First().Text(), 10, 32)
 	if err != nil {
 		return te, err
 	}
 	te.SnatchCount = int(snatches)
 
-	// loop until next font tag
-	for {
-		tt := z.Next()
-		t = z.Token()
-		if tt == html.StartTagToken && t.Data == "font" {
-			break
-		}
-	}
-
 	// Seeder Count
-	z.Next() // text in font
-	t = z.Token()
-	seeders, err := strconv.ParseInt(t.Data, 10, 32)
+	seeders, err := strconv.ParseInt(tds.Eq(9).Find("a").First().Text(), 10, 32)
 	if err != nil {
 		return te, err
 	}
 	te.SeederCount = int(seeders)
 
-	// loop until next font tag
-	for {
-		tt := z.Next()
-		t = z.Token()
-		if tt == html.StartTagToken && t.Data == "font" {
-			break
-		}
-	}
-
 	// Leecher Count
-	z.Next() // text in font
-	t = z.Token()
-	leechers, err := strconv.ParseInt(t.Data, 10, 32)
+	leechers, err := strconv.ParseInt(tds.Eq(10).Find("a").First().Text(), 10, 32)
 	if err != nil {
 		return te, err
 	}
 	te.LeecherCount = int(leechers)
 
-	// loop until next b tag
-	for {
-		tt := z.Next()
-		t = z.Token()
-		if tt == html.StartTagToken && t.Data == "b" {
-			break
-		}
-	}
-
 	// Uploader
-	z.Next() // text in font
-	t = z.Token()
-	te.Uploader = t.Data
+	link = tds.Eq(12).Find("a")
+	if len(link.Nodes) == 1 {
+		te.Uploader = link.Text()
+	} else {
+		te.Uploader = "anon"
+	}
 
 	return te, nil
 }
 
-func Details(c *Connection, id int64, files bool, peers bool, snatches bool) (TorrentEntry, error) {
+func Details(c *Connection, id int64, files bool, peers bool, snatches bool) (*TorrentEntry, error) {
 	if err := c.assureLogin(); err != nil {
-		return TorrentEntry{}, err
+		return nil, err
 	}
 	data := url.Values{"id": {fmt.Sprintf("%d", id)}}
 	if files {
@@ -656,26 +538,28 @@ func Details(c *Connection, id int64, files bool, peers bool, snatches bool) (To
 	}
 	resp, err := c.get(c.buildUrl("/details.php", data))
 	if err != nil {
-		return TorrentEntry{}, err
+		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	// encode the response from iso-8859-1, or the umlauts are fucked
+	rd := transform.NewReader(resp.Body, charmap.ISO8859_1.NewDecoder())
+	body, err := ioutil.ReadAll(rd)
 	debugRequest(resp, string(body))
 
 	if resp.StatusCode == 404 {
-		return TorrentEntry{}, errors.New("torrent not found")
+		return nil, errors.New("torrent not found")
 	}
 
 	te, err := parseTorrentDetails(bytes.NewReader(body), files, peers)
 	if err != nil {
-		return TorrentEntry{}, err
+		return nil, err
 	}
 
 	if snatches {
 		data := url.Values{"id": {fmt.Sprintf("%d", id)}}
 		resp, err := c.get(c.buildUrl("/viewsnatches.php", data))
 		if err != nil {
-			return TorrentEntry{}, err
+			return nil, err
 		}
 		defer resp.Body.Close()
 		body, err := ioutil.ReadAll(resp.Body)
@@ -743,158 +627,76 @@ func Details(c *Connection, id int64, files bool, peers bool, snatches bool) (To
 	return te, nil
 }
 
-func parseTorrentDetails(reader io.Reader, files, peers bool) (TorrentEntry, error) {
-	z := html.NewTokenizer(reader)
+func parseTorrentDetails(reader io.Reader, files, peers bool) (*TorrentEntry, error) {
+	doc, err := goquery.NewDocumentFromReader(reader)
+	if err != nil {
+		return nil, err
+	}
+
 	te := TorrentEntry{}
-
-	inDetailsTable := false
-	lookForTable := false
-
-Loop:
-	for {
-		tt := z.Next()
-
-		switch {
-		case tt == html.ErrorToken:
-			// End of the document, we're done
-			break Loop
-		case tt == html.StartTagToken:
-			t := z.Token()
-
-			if !lookForTable && !inDetailsTable {
-				continue
-			} else if lookForTable {
-				if t.Data == "table" {
-					inDetailsTable = true
-					lookForTable = false
-					break Loop
-				}
-			}
-		case tt == html.TextToken:
-			t := z.Token()
-
-			if !lookForTable && !inDetailsTable {
-				if strings.HasPrefix(t.Data, "Details zu") {
-					te.Name = t.Data[11:]
-					lookForTable = true
-				}
-			}
+	var detailsTable *goquery.Selection
+	divs := doc.Find("div.blockinborder")
+	for i := range divs.Nodes {
+		node := divs.Eq(i)
+		if !strings.HasPrefix(node.Find("div.centeredtitle b").Text(), "Details zu") {
+			continue
 		}
+
+		te.Name = strings.TrimPrefix(node.Find("div.centeredtitle b").Text(), "Details zu ")
+		detailsTable = node.Find("div>table.tableinborder")
+		break
 	}
 
-	if !inDetailsTable {
-		return te, errors.New("could not find details table")
+	if detailsTable == nil {
+		return nil, errors.New("could not find details table")
 	}
 
-	var t html.Token
-
-	// loop until next anchor tag
-	for {
-		tt := z.Next()
-		t = z.Token()
-		if tt == html.StartTagToken && t.Data == "a" {
-			break
-		} else if tt == html.ErrorToken {
-			return te, errors.New("ran into an infinite loop while searching")
-		}
-	}
+	trs := detailsTable.Find("tbody:first-child>tr")
+	row := 0
 
 	// ID
-	ok, href := getAttr(t, "href")
+	href, ok := trs.Eq(row).Find("td a").Attr("href")
 	if !ok {
-		return te, errors.New("name is missing href attr")
+		return &te, errors.New("name is missing href attr")
 	}
+
 	ire, _ := regexp.Compile("download\\.php\\?torrent=(\\d+)")
 	if ire.MatchString(href) {
 		id, err := strconv.ParseInt(ire.FindStringSubmatch(href)[1], 10, 32)
 		if err != nil {
-			return te, err
+			return &te, err
 		}
 		te.Id = int(id)
 	}
 
-	// loop until td tag after next td
-	for i := 0; i < 2; i++ {
-		for {
-			tt := z.Next()
-			t = z.Token()
-			if tt == html.StartTagToken && t.Data == "td" {
-				break
-			} else if tt == html.ErrorToken {
-				return te, errors.New("ran into an infinite loop while searching")
-			}
-		}
-	}
-
 	// Info Hash
-	z.Next()
-	t = z.Token()
-	te.InfoHash = t.Data
-
-	// loop until td tag after next td
-	for i := 0; i < 2; i++ {
-		for {
-			tt := z.Next()
-			t = z.Token()
-			if tt == html.StartTagToken && t.Data == "td" {
-				break
-			} else if tt == html.ErrorToken {
-				return te, errors.New("ran into an infinite loop while searching")
-			}
-		}
-	}
+	row++
+	te.InfoHash = trs.Eq(row).Find("td").Eq(1).Text()
 
 	// Description
 	description := ""
-	// loop until next text
-	for {
-		tt := z.Next()
-		t = z.Token()
-		if tt == html.TextToken {
-			description += t.Data
-		} else if tt == html.EndTagToken && t.Data == "td" {
-			break
-		}
+	row++
+	rawDescription, err := trs.Eq(row).Find("td").Eq(1).After("center").Html()
+	if err == nil {
+		// strip all html tags, i think we can use the shoutbox function for this task
+
+		description = ShoutboxStrip(rawDescription)
 	}
 	te.Description = description
 
 	// Category
-	// loop until text == 'Typ'
-	for {
-		tt := z.Next()
-		t = z.Token()
-		if tt == html.TextToken && t.Data == "Typ" {
-			z.Next()
-			z.Next()
-			z.Next()
-			t = z.Token()
-			break
-		} else if tt == html.ErrorToken {
-			return te, errors.New("ran into an infinite loop while searching")
-		}
-	}
-	cid, err := Category.ToInt(t.Data)
+	row += 2
+	cid, err := Category.ToInt(getSecondTd(trs, row).Text())
 	if err != nil {
 		cid = 0
 	}
 	te.Category = cid
 
 	// Size
-	// loop until text == 'Größe'
-	for {
-		tt := z.Next()
-		t = z.Token()
-		if tt == html.TextToken && strings.HasPrefix(t.Data, "Gr") && !utf8.ValidString(t.Data) { //t.Data == "Größe" {
-			z.Next()
-			z.Next()
-			z.Next()
-			t = z.Token()
-			break
-		} else if tt == html.ErrorToken {
-			return te, errors.New("ran into an infinite loop while searching")
-		}
-	}
-	temp := strings.Split(t.Data, " ")
+	// Looks like 117,73 GB (123,456,789 Bytes)
+	row += 2
+	temp := strings.Split(getSecondTd(trs, row).Text(), " ")
+	// convert '(123,456,789' to a uint
 	size, err := strconv.ParseUint(strings.Replace(strings.Replace(temp[2], "(", "", 1), ",", "", -1), 10, 64)
 	if err != nil {
 		size = 0
@@ -902,48 +704,18 @@ Loop:
 	te.Size = size
 
 	// Added
-	// loop until text == 'Hinzugefügt'
-	for {
-		tt := z.Next()
-		t = z.Token()
-		if tt == html.TextToken && strings.HasPrefix(t.Data, "Hinzugef") && !utf8.ValidString(t.Data) { //t.Data == "Hinzugefügt" {
-			z.Next()
-			z.Next()
-			z.Next()
-			t = z.Token()
-			break
-		} else if tt == html.ErrorToken {
-			return te, errors.New("ran into an infinite loop while searching")
-		}
-	}
-	date, err := time.Parse("2006-01-02 15:04:05", t.Data)
+	row++
+	date, err := time.Parse("2006-01-02 15:04:05", getSecondTd(trs, row).Text())
 	if err != nil {
 		date = time.Unix(0, 0)
 	}
 	te.Added = date
 
 	// loop until text == 'Fertiggestellt'
-	for {
-		tt := z.Next()
-		t = z.Token()
-		if tt == html.TextToken && t.Data == "Fertiggestellt" {
-			for {
-				tt := z.Next()
-				t = z.Token()
-				if tt == html.StartTagToken && t.Data == "td" {
-					z.Next()
-					t = z.Token()
-					break
-				} else if tt == html.ErrorToken {
-					return te, errors.New("ran into an infinite loop while searching")
-				}
-			}
-			break
-		}
-	}
 	prs, _ := regexp.Compile("(\\d+) mal")
-	if prs.MatchString(t.Data) {
-		m := prs.FindStringSubmatch(t.Data)
+	row += 6
+	if prs.MatchString(getSecondTd(trs, row).Text()) {
+		m := prs.FindStringSubmatch(getSecondTd(trs, row).Text())
 		temp, err := strconv.ParseInt(m[1], 10, 32)
 		if err != nil {
 			temp = 0
@@ -952,108 +724,47 @@ Loop:
 	}
 
 	// Num Files
-	// loop until text == 'Anzahl Dateien'
-	for {
-		tt := z.Next()
-		t = z.Token()
-		if tt == html.TextToken && t.Data == "Anzahl Dateien" {
-			z.Next()
-			z.Next()
-			z.Next()
-			z.Next()
-			z.Next()
-			z.Next()
-			z.Next()
-			t = z.Token()
-			break
-		} else if tt == html.ErrorToken {
-			return te, errors.New("ran into an infinite loop while searching")
-		}
-	}
-	temp = strings.Split(t.Data, " ")
+	row += 2
+	temp = strings.Split(getSecondTd(trs, row).Text(), " ")
 	nfiles, err := strconv.ParseInt(strings.Replace(temp[0], ",", "", -1), 10, 32)
 	if err != nil {
 		nfiles = 0
 	}
 	te.FileCount = int(nfiles)
 	if files {
-		// loop until text == 'Dateiliste'
-		for {
-			tt := z.Next()
-			t = z.Token()
-			if tt == html.TextToken && t.Data == "Dateiliste" {
-				for {
-					tt := z.Next()
-					t = z.Token()
-					if tt == html.StartTagToken && t.Data == "table" {
-						break
-					} else if tt == html.ErrorToken {
-						return te, errors.New("ran into an infinite loop while searching")
-					}
-				}
-				break
-			}
-		}
-
-		files, err := parseFileList(z)
+		row++
+		files, err := parseFileList(getSecondTd(trs, row).Find("table"))
 		if err == nil {
 			te.Files = files
 		}
 		te.FileCount = len(files)
+		// amount of <tr> elements from file table to row count
+		row += len(files) + 1
 	}
 
 	// Num Peers
 	if peers {
-		// loop until text == 'Seeder'
-		parseSeeders := true
-		for {
-			tt := z.Next()
-			t = z.Token()
-			if tt == html.TextToken && t.Data == "Seeder" {
-				for {
-					tt := z.Next()
-					t = z.Token()
-					if tt == html.StartTagToken && t.Data == "table" {
-						break
-					} else if tt == html.ErrorToken {
-						return te, errors.New("ran into an infinite loop while searching")
-					} else if tt == html.TextToken && t.Data == "0 Seeder" {
-						parseSeeders = false
-					}
-				}
-				break
-			}
-		}
+		row += 2
+		sTable := getSecondTd(trs, row).Find("table")
+		parseSeeders := len(sTable.Nodes) > 0
 		var seeder []Peer
 		if parseSeeders {
-			seeder, _ = parsePeerList(z)
+			seeder, _ = parsePeerList(sTable)
 			te.SeederCount = len(seeder)
+			// add amount of <tr> elements from seeders table to row count
+			row += te.SeederCount + 1
 		}
 
-		// loop until text == 'Leecher'
-		parseLeechers := true
-		for {
-			tt := z.Next()
-			t = z.Token()
-			if tt == html.TextToken && t.Data == "Leecher" {
-				for {
-					tt := z.Next()
-					t = z.Token()
-					if tt == html.StartTagToken && t.Data == "table" {
-						break
-					} else if tt == html.ErrorToken {
-						return te, errors.New("ran into an infinite loop while searching")
-					} else if tt == html.TextToken && t.Data == "0 Leecher" {
-						parseLeechers = false
-					}
-				}
-				break
-			}
-		}
+		row++
+		pTable := getSecondTd(trs, row).Find("table")
+		parseLeechers := len(pTable.Nodes) > 0
+
 		var leecher []Peer
 		if parseLeechers {
-			leecher, _ = parsePeerList(z)
+			leecher, _ = parsePeerList(pTable)
 			te.LeecherCount = len(leecher)
+			// add amount of <tr> elements from leechers table to row count
+			row += te.LeecherCount + 1
 		}
 
 		if parseSeeders && parseLeechers {
@@ -1064,28 +775,11 @@ Loop:
 			te.Peers = leecher
 		}
 	} else {
-		// loop until text == 'Peers'
-		for {
-			tt := z.Next()
-			t = z.Token()
-			if tt == html.TextToken && t.Data == "Peers" {
-				for {
-					tt := z.Next()
-					t = z.Token()
-					if tt == html.StartTagToken && t.Data == "td" {
-						z.Next()
-						t = z.Token()
-						break
-					} else if tt == html.ErrorToken {
-						return te, errors.New("ran into an infinite loop while searching")
-					}
-				}
-				break
-			}
-		}
+		row += 2
+
 		prs, _ := regexp.Compile("(\\d+) Seeder, (\\d+) Leecher = (\\d+) Peer\\(s\\) gesamt")
-		if prs.MatchString(t.Data) {
-			m := prs.FindStringSubmatch(t.Data)
+		if prs.MatchString(getSecondTd(trs, row).Text()) {
+			m := prs.FindStringSubmatch(getSecondTd(trs, row).Text())
 			temp, err := strconv.ParseInt(m[1], 10, 32)
 			if err != nil {
 				temp = 0
@@ -1099,13 +793,11 @@ Loop:
 		}
 	}
 
-	return te, nil
+	return &te, nil
 }
 
-func parsePeerList(z *html.Tokenizer) ([]Peer, error) {
+func parsePeerList(s *goquery.Selection) ([]Peer, error) {
 	list := make([]Peer, 0)
-	tdCounter := 0
-	skipTr := true
 	peer := Peer{
 		Name:        "",
 		Connectable: false,
@@ -1120,171 +812,140 @@ func parsePeerList(z *html.Tokenizer) ([]Peer, error) {
 		Client:      "",
 	}
 
-Loop:
-	for {
-		tt := z.Next()
+	re, _ := regexp.Compile("(:?(\\d+)d )?([0-9:]+)")
 
-		switch {
-		case tt == html.StartTagToken:
-			t := z.Token()
-			if t.Data == "tr" {
-				tdCounter = 0
-			} else if !skipTr && t.Data == "td" {
-				tdCounter++
-			}
-			if tdCounter == 8 && t.Data == "div" {
-				ok, val := getAttr(t, "title")
-				if ok {
-					val = strings.Replace(val, "%", "", 1)
-					temp, err := strconv.ParseFloat(val, 64)
-					if err != nil {
-						temp = 0.0
-					}
-					peer.Completed = temp
-					if int(peer.Completed) == 100 {
-						peer.Seeder = true
-					}
-				}
-			}
-		case tt == html.TextToken:
-			t := z.Token()
-			if t.Data == "\n" {
-				continue
-			}
-			switch tdCounter {
-			case 1:
-				peer.Name = t.Data
-			case 2:
-				if t.Data == "Ja" {
-					peer.Connectable = true
-				}
-			case 3:
-				peer.Uploaded = stringToDatasize(t.Data)
-			case 4:
-				peer.Ulrate = stringToDatasize(strings.Replace(t.Data, "/s", "", 1))
-			case 5:
-				peer.Downloaded = stringToDatasize(t.Data)
-			case 6:
-				peer.Dlrate = stringToDatasize(strings.Replace(t.Data, "/s", "", 1))
-			case 7:
-				if t.Data == "Inf." {
-					peer.Ratio = -1.0
-				} else if t.Data == "---" {
-					peer.Ratio = 0.0
-				} else {
-					temp, err := strconv.ParseFloat(t.Data, 64)
-					if err != nil {
-						temp = 0.0
-					}
-					peer.Ratio = temp
-				}
-			case 9:
-				re, _ := regexp.Compile("(:?(\\d+)d )?([0-9:]+)")
-				connected := uint64(0)
-				if re.MatchString(t.Data) {
-					m := re.FindStringSubmatch(t.Data)
-					if m[1] != "" {
-						temp, err := strconv.ParseUint(m[1], 10, 32)
-						if err != nil {
-							temp = 0
-						}
-						connected += temp * 86400
-					}
-					if m[2] != "" {
-						temp := strings.Split(m[2], ":")
-						multi := uint64(1)
-						for i := len(temp) - 1; i >= 0; i-- {
-							temp2, err := strconv.ParseUint(temp[i], 10, 32)
-							if err != nil {
-								temp2 = 0
-							}
-							connected += temp2 * multi
-							multi *= 60
-						}
-					}
-				}
+	s.Find("tr").Each(func(i int, s *goquery.Selection) {
+		if i == 0 {
+			return
+		}
 
-				peer.Connected = connected
-			case 11:
-				peer.Client = t.Data
+		tds := s.Find("td")
+		col := 0
+		td := tds.Eq(col)
+
+		if len(td.Find("a").Nodes) > 0 {
+			peer.Name = td.Find("a").Text()
+		} else {
+			peer.Name = td.Text()
+		}
+
+		col++
+		td = tds.Eq(col)
+		peer.Connectable = td.Text() == "Ja"
+
+		col++
+		td = tds.Eq(col)
+		peer.Uploaded = stringToDatasize(td.Text())
+
+		col++
+		td = tds.Eq(col)
+		peer.Ulrate = stringToDatasize(strings.TrimSuffix(td.Text(), "/s"))
+
+		col++
+		td = tds.Eq(col)
+		peer.Downloaded = stringToDatasize(td.Text())
+
+		col++
+		td = tds.Eq(col)
+		peer.Dlrate = stringToDatasize(strings.TrimSuffix(td.Text(), "/s"))
+
+		col++
+		td = tds.Eq(col)
+		if td.Text() == "Inf." {
+			peer.Ratio = -1.0
+		} else if td.Text() == "---" {
+			peer.Ratio = 0.0
+		} else {
+			temp, err := strconv.ParseFloat(td.Find("font").Text(), 64)
+			if err != nil {
+				temp = 0.0
 			}
-		case tt == html.EndTagToken:
-			t := z.Token()
-			if t.Data == "table" {
-				break Loop
-			} else if skipTr && t.Data == "tr" {
-				skipTr = false
-			} else if t.Data == "tr" {
-				list = append(list, peer)
-				peer = Peer{
-					Name:        "",
-					Connectable: false,
-					Seeder:      false,
-					Uploaded:    0,
-					Ulrate:      0,
-					Downloaded:  0,
-					Dlrate:      0,
-					Ratio:       0.0,
-					Completed:   0.0,
-					Connected:   0,
-					Client:      "",
-				}
-				tdCounter = -1
+			peer.Ratio = temp
+		}
+
+		col++
+		div := tds.Eq(col).Find("div")
+		val, ok := div.Attr("title")
+		val = strings.Replace(val, "%", "", 1)
+		if ok {
+			val = strings.Replace(val, "%", "", 1)
+			temp, err := strconv.ParseFloat(val, 64)
+			if err != nil {
+				temp = 0.0
+			}
+			peer.Completed = temp
+			if int(peer.Completed) == 100 {
+				peer.Seeder = true
 			}
 		}
-	}
+
+		col++
+		td = tds.Eq(col)
+		connected := uint64(0)
+		if re.MatchString(td.Text()) {
+			m := re.FindStringSubmatch(td.Text())
+			if m[1] != "" {
+				temp, err := strconv.ParseUint(m[1], 10, 32)
+				if err != nil {
+					temp = 0
+				}
+				connected += temp * 86400
+			}
+			if m[2] != "" {
+				temp := strings.Split(m[2], ":")
+				multi := uint64(1)
+				for i := len(temp) - 1; i >= 0; i-- {
+					temp2, err := strconv.ParseUint(temp[i], 10, 32)
+					if err != nil {
+						temp2 = 0
+					}
+					connected += temp2 * multi
+					multi *= 60
+				}
+			}
+		}
+
+		col += 2
+		td = tds.Eq(col)
+		peer.Client = td.Text()
+
+		// append peer to list
+		list = append(list, peer)
+		peer = Peer{
+			Name:        "",
+			Connectable: false,
+			Seeder:      false,
+			Uploaded:    0,
+			Ulrate:      0,
+			Downloaded:  0,
+			Dlrate:      0,
+			Ratio:       0.0,
+			Completed:   0.0,
+			Connected:   0,
+			Client:      "",
+		}
+	})
 
 	return list, nil
 }
 
-func parseFileList(z *html.Tokenizer) ([]TorrentFile, error) {
+func parseFileList(s *goquery.Selection) ([]TorrentFile, error) {
 	list := make([]TorrentFile, 0)
-	tdCounter := 0
-	skipTr := true
-	file := TorrentFile{
-		Name: "",
-		Size: 0,
-	}
 
-Loop:
-	for {
-		tt := z.Next()
-
-		switch {
-		case tt == html.StartTagToken:
-			t := z.Token()
-			if t.Data == "tr" {
-				tdCounter = 0
-			} else if !skipTr && t.Data == "td" {
-				tdCounter++
-			}
-		case tt == html.TextToken:
-			t := z.Token()
-			if t.Data == "\n" {
-				continue
-			}
-			switch tdCounter {
-			case 1:
-				file.Name = t.Data
-			case 2:
-				file.Size = stringToDatasize(t.Data)
-			}
-		case tt == html.EndTagToken:
-			t := z.Token()
-			if t.Data == "table" {
-				break Loop
-			} else if skipTr && t.Data == "tr" {
-				skipTr = false
-			} else if t.Data == "tr" {
-				list = append(list, file)
-				file = TorrentFile{
-					Name: "",
-					Size: 0,
-				}
-				tdCounter = -1
-			}
+	s.Find("tr").Each(func(i int, s *goquery.Selection) {
+		if i == 0 {
+			return
 		}
-	}
+
+		tds := s.Find("td")
+
+		file := TorrentFile{
+			Name: tds.Eq(0).Text(),
+			Size: stringToDatasize(tds.Eq(1).Text()),
+		}
+
+		list = append(list, file)
+	})
 
 	return list, nil
 }
@@ -1310,144 +971,92 @@ func crawlSnatchList(c *Connection, url string, page int64, chSnatch chan Snatch
 }
 
 func parseSnatches(reader io.Reader, ch chan Snatch) {
-	z := html.NewTokenizer(reader)
-
-	tdCounter := 0
-	skipTr := true
-	snatch := Snatch{
-		Name:       "",
-		Completed:  time.Unix(0, 0),
-		Ratio:      0.0,
-		Downloaded: 0,
-		Uploaded:   0,
-		Stopped:    time.Unix(0, 0),
-		Seeding:    false,
-	}
-
-	isInSnatchesTable := false
-	lookForTable := false
-
-Loop:
-	for {
-		tt := z.Next()
-
-		switch {
-		case tt == html.ErrorToken:
-			// End of the document, we're done
-			break Loop
-		case tt == html.StartTagToken:
-			t := z.Token()
-
-			if !lookForTable && !isInSnatchesTable {
-				continue
-			} else if lookForTable {
-				if t.Data == "table" {
-					isInSnatchesTable = true
-					lookForTable = false
-					break Loop
-				}
-			}
-		case tt == html.TextToken:
-			t := z.Token()
-
-			if !lookForTable && !isInSnatchesTable {
-				if t.Data == "Mitglieder die dieses Torrent gedownloadet haben" {
-					lookForTable = true
-				}
-			}
-		}
-	}
-
-	parseRatio := false
-
-InnerLoop:
-	for {
-		tt := z.Next()
-
-		switch {
-		case tt == html.StartTagToken:
-			t := z.Token()
-			if t.Data == "tr" {
-				tdCounter = 0
-			} else if !skipTr && t.Data == "td" {
-				tdCounter++
-			}
-		case tt == html.TextToken:
-			t := z.Token()
-			if t.Data == "\n" {
-				continue
-			}
-			switch tdCounter {
-			case 1:
-				snatch.Name = t.Data
-			case 2:
-				if strings.HasPrefix(t.Data, "Torrent:") {
-					snatch.Uploaded = stringToDatasize(strings.TrimPrefix(t.Data, "Torrent: "))
-				}
-			case 3:
-				if strings.HasPrefix(t.Data, "Torrent:") {
-					snatch.Downloaded = stringToDatasize(strings.TrimPrefix(t.Data, "Torrent: "))
-				}
-			case 4:
-				if strings.HasPrefix(t.Data, "Torrent:") {
-					parseRatio = true
-				} else if parseRatio {
-					if t.Data == "Inf." {
-						snatch.Ratio = -1.0
-					} else if t.Data == "---" {
-						snatch.Ratio = 0.0
-					} else {
-						temp, err := strconv.ParseFloat(t.Data, 64)
-						if err != nil {
-							debugLog(err.Error())
-							temp = 0.0
-						}
-						snatch.Ratio = temp
-					}
-					parseRatio = false
-				}
-			case 5:
-				date, err := time.Parse("2006-01-02 15:04:05", t.Data)
-				if err != nil {
-					date = time.Unix(0, 0)
-				}
-				snatch.Completed = date
-			case 6:
-				if t.Data == "Seedet im Moment" {
-					snatch.Seeding = true
-				} else {
-					date, err := time.Parse("2006-01-02 15:04:05", t.Data)
-					if err != nil {
-						date = time.Unix(0, 0)
-					}
-					snatch.Stopped = date
-				}
-			}
-		case tt == html.EndTagToken:
-			t := z.Token()
-			if t.Data == "table" {
-				break InnerLoop
-			} else if skipTr && t.Data == "tr" {
-				skipTr = false
-			} else if t.Data == "tr" {
-				ch <- snatch
-				snatch = Snatch{
-					Name:       "",
-					Completed:  time.Unix(0, 0),
-					Ratio:      0.0,
-					Downloaded: 0,
-					Uploaded:   0,
-					Stopped:    time.Unix(0, 0),
-					Seeding:    false,
-				}
-				tdCounter = -1
-			}
-		}
-	}
-
-	if !isInSnatchesTable {
+	doc, err := goquery.NewDocumentFromReader(reader)
+	if err != nil {
 		return
 	}
+
+	t := doc.Find("table.tableb")
+	if len(t.Nodes) == 0 {
+		return
+	}
+	table := t.Eq(0)
+
+	table.Find("tr").Each(func(i int, s *goquery.Selection) {
+		if i == 0 {
+			return
+		}
+
+		snatch := Snatch{
+			Name:       "",
+			Completed:  time.Unix(0, 0),
+			Ratio:      0.0,
+			Downloaded: 0,
+			Uploaded:   0,
+			Stopped:    time.Unix(0, 0),
+			Seeding:    false,
+		}
+
+		col := 0
+		td := s.Find("td").Eq(col)
+		snatch.Name = td.Find("a").Text()
+
+		col++
+		td = s.Find("td").Eq(col)
+		t := td.Find("b").Text()
+
+		snatch.Downloaded = stringToDatasize(strings.TrimPrefix(t, "Torrent: "))
+
+		col++
+		td = s.Find("td").Eq(col)
+		t = td.Find("b").Text()
+
+		snatch.Uploaded = stringToDatasize(strings.TrimPrefix(t, "Torrent: "))
+
+		col++
+		td = s.Find("td").Eq(col)
+		t = td.Find("b").Text()
+		t = strings.TrimPrefix(t, "Torrent: ")
+
+		if t == "Inf." {
+			snatch.Ratio = -1.0
+		} else if t == "---" {
+			snatch.Ratio = 0.0
+		} else {
+			temp, err := strconv.ParseFloat(t, 64)
+			if err != nil {
+				debugLog(err.Error())
+				temp = 0.0
+			}
+			snatch.Ratio = temp
+		}
+
+		col++
+		td = s.Find("td").Eq(col)
+		t = td.Find("b").Text()
+
+		date, err := time.Parse("2006-01-02 15:04:05", t)
+		if err != nil {
+			date = time.Unix(0, 0)
+		}
+		snatch.Completed = date
+
+		col++
+		td = s.Find("td").Eq(col)
+		t = td.Find("font").Text()
+
+		if t == "Seedet im Moment" {
+			snatch.Seeding = true
+		} else {
+			date, err := time.Parse("2006-01-02 15:04:05", t)
+			if err != nil {
+				date = time.Unix(0, 0)
+			}
+			snatch.Stopped = date
+		}
+
+		ch <- snatch
+	})
 }
 
 func Thank(c *Connection, id int64) (bool, error) {
@@ -1473,27 +1082,6 @@ func Thank(c *Connection, id int64) (bool, error) {
 	}
 
 	return true, nil
-}
-
-// Helper function to pull the class attribute from a Token
-func getCssClass(t html.Token) (bool, string) {
-	return getAttr(t, "class")
-}
-
-// Helper function to pull an attribute from a Token
-func getAttr(t html.Token, attr string) (ok bool, val string) {
-	// Iterate over all of the Token's attributes until we find an "attr"
-	for _, a := range t.Attr {
-		if a.Key == attr {
-			val = a.Val
-			ok = true
-			break
-		}
-	}
-
-	// "bare" return will return the variables (ok, val) as defined in
-	// the function definition
-	return
 }
 
 func stringToDatasize(str string) uint64 {
@@ -1526,4 +1114,8 @@ func stringToDatasize(str string) uint64 {
 	}
 
 	return temp3
+}
+
+func getSecondTd(s *goquery.Selection, nthTr int) *goquery.Selection {
+	return s.Eq(nthTr).Find("td").Eq(1)
 }
