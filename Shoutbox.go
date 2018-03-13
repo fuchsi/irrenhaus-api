@@ -20,7 +20,9 @@ package irrenhaus_api
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"io/ioutil"
+	"log"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -56,6 +58,7 @@ func ShoutboxRead(c *Connection, shoutId int, lastMessageId int64) ([]ShoutboxMe
 	}
 
 	defer resp.Body.Close()
+	// encode the response from iso-8859-1, or the json encoder shits the bed
 	rd := transform.NewReader(resp.Body, charmap.ISO8859_1.NewDecoder())
 	body, err := ioutil.ReadAll(rd)
 	debugRequest(resp, string(body))
@@ -67,6 +70,9 @@ func ShoutboxRead(c *Connection, shoutId int, lastMessageId int64) ([]ShoutboxMe
 	jsonMsg := make([][]string, 0)
 	err = json.Unmarshal(body, &jsonMsg)
 	if err != nil {
+		DEBUG = true
+		debugRequest(resp, string(body))
+		DEBUG = false
 		return nil, err
 	}
 
@@ -85,6 +91,11 @@ func ShoutboxRead(c *Connection, shoutId int, lastMessageId int64) ([]ShoutboxMe
 		date, err := time.Parse("02.01. 15:04", jmsg[2])
 		if err != nil {
 			debugLog("[ShoutboxRead]", err.Error())
+		}
+		messageType := jmsg[6]
+		if messageType != "" {
+			debugLog("unsuppored message type:" + messageType)
+			continue
 		}
 		strMsg := ShoutboxStrip(jmsg[5])
 		msg := ShoutboxMessage{
@@ -131,6 +142,8 @@ func ShoutboxStrip(msg string) (stripped string) {
 	stripped = strings.Replace(stripped, "<br>", "\n", -1)
 	stripped = strings.Replace(stripped, "&nbsp;", " ", -1)
 
+	stripped = html.UnescapeString(stripped)
+
 	return
 }
 
@@ -140,6 +153,14 @@ func ShoutboxWrite(c *Connection, shoutId int, message string) (bool, error) {
 	data := url.Values{}
 	data.Add("b", fmt.Sprintf("%d", shoutId))
 	datap := url.Values{}
+
+	// encode the message as iso-8859-1, because np doesn't support utf-8 (even for xhr/json stuff)
+	charmapEncoder := charmap.ISO8859_1.NewEncoder()
+	message, err := charmapEncoder.String(message)
+	if err != nil {
+		log.Println(err.Error())
+		return false, err
+	}
 	datap.Add("shbox_text", message)
 
 	resp, err := c.postForm(c.buildUrl("shoutx.php", data), datap)
@@ -148,6 +169,7 @@ func ShoutboxWrite(c *Connection, shoutId int, message string) (bool, error) {
 	}
 
 	defer resp.Body.Close()
+	// encode the response from iso-8859-1, or the json encoder shits the bed
 	rd := transform.NewReader(resp.Body, charmap.ISO8859_1.NewDecoder())
 	body, err := ioutil.ReadAll(rd)
 	debugRequest(resp, string(body))
