@@ -23,16 +23,13 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"io/ioutil"
-	"log"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
-
-	"golang.org/x/text/encoding/charmap"
-	"golang.org/x/text/transform"
 )
 
 // Unnamed events are still unknown
@@ -84,9 +81,11 @@ func ShoutboxRead(c *Connection, shoutId int, lastMessageId int64) ([]ShoutboxMe
 	}
 
 	defer resp.Body.Close()
-	// encode the response from iso-8859-1, or the json encoder shits the bed
-	rd := transform.NewReader(resp.Body, charmap.ISO8859_1.NewDecoder())
-	body, err := ioutil.ReadAll(rd)
+	// sanitize the json input
+	body, err := sanitizeJSON(resp.Body)
+	if err != nil {
+		return nil, err
+	}
 	debugRequest(resp, string(body))
 	if len(body) <= 1 {
 		return nil, nil // no error, just no new data
@@ -96,7 +95,7 @@ func ShoutboxRead(c *Connection, shoutId int, lastMessageId int64) ([]ShoutboxMe
 	jsonMsg := make([][]string, 0)
 	err = json.Unmarshal(body, &jsonMsg)
 	if err != nil {
-		if bytes.ContainsAny(body, "Die Serverlast ist Momentan zu hoch") {
+		if bytes.Contains(body, []byte("Die Serverlast ist Momentan zu hoch")) {
 			return nil, errors.New("serverload")
 		}
 		debugRequest(resp, string(body))
@@ -211,14 +210,6 @@ func ShoutboxWrite(c *Connection, shoutId int, message string) (bool, error) {
 	data := url.Values{}
 	data.Add("b", fmt.Sprintf("%d", shoutId))
 	datap := url.Values{}
-
-	// encode the message as iso-8859-1, because np doesn't support utf-8 (even for xhr/json stuff)
-	charmapEncoder := charmap.ISO8859_1.NewEncoder()
-	message, err := charmapEncoder.String(message)
-	if err != nil {
-		log.Println(err.Error())
-		return false, err
-	}
 	datap.Add("shbox_text", message)
 
 	resp, err := c.postForm(c.buildUrl("shoutx.php", data), datap)
@@ -227,9 +218,11 @@ func ShoutboxWrite(c *Connection, shoutId int, message string) (bool, error) {
 	}
 
 	defer resp.Body.Close()
-	// encode the response from iso-8859-1, or the json encoder shits the bed
-	rd := transform.NewReader(resp.Body, charmap.ISO8859_1.NewDecoder())
-	body, err := ioutil.ReadAll(rd)
+	// sanitize the json input
+	body, err := sanitizeJSON(resp.Body)
+	if err != nil {
+		return false, err
+	}
 	debugRequest(resp, string(body))
 
 	jsonMsg := make([][]string, 0)
@@ -264,7 +257,7 @@ func shoutboxRegexpInit() {
 	shoutboxRegexp["italic"], _ = regexp.Compile("<i>(.+)</i>")
 	shoutboxRegexp["underline"], _ = regexp.Compile("<u>(.+)</u>")
 	shoutboxRegexp["img"], _ = regexp.Compile("<img src=\"([^\"]+)\" alt=\"\" border=\"0\">")
-	shoutboxRegexp["emoji"], _ = regexp.Compile("<img.*src=\"(/pic/smilies/([^\"]+))\".*>")
+	shoutboxRegexp["emoji"], _ = regexp.Compile("<img.*?src=\"(/pic/smilies/([^\"]+))\"[^>]*>")
 	shoutboxRegexp["img3"], _ = regexp.Compile("<img border=\"0\" src=\"([^\"]+)\" alt=\"\">")
 	shoutboxRegexp["color"], _ = regexp.Compile("<font color=\"?([a-zA-Z]+|#[0-9a-fA-F]+)\"?>(.+?)</font>")
 	shoutboxRegexp["link"], _ = regexp.Compile("<a href=\"(https?://[^\"]+)\"(:? target=\"([^\"]+)\")?>(.+)</a>")
@@ -282,8 +275,8 @@ func emojiInit() {
 	if len(emojis) > 0 {
 		return
 	}
-	emojiCount := 238
-	emojis = make(map[string]rune, emojiCount)
+
+	emojis = make(map[string]rune)
 
 	emojis["smile1.gif"] = 0x1F600
 	emojis["zwinkern.gif"] = 0x1F609
@@ -303,226 +296,226 @@ func emojiInit() {
 	emojis["dance3.gif"] = 0x1F483
 	emojis["vogelzeig.gif"] = 0x1F926
 	emojis["blush.gif"] = 0x1F605
-	emojis["jippie.gif"] = 0x2620
-	emojis["abgelehnt.gif"] = 0x2620
-	emojis["abinsbett.gif"] = 0x2620
-	emojis["achlass.gif"] = 0x2620
-	emojis["afk.gif"] = 0x2620
-	emojis["augen.GIF"] = 0x2620
-	emojis["bad.gif"] = 0x2620
-	emojis["baehh.gif"] = 0x2620
-	emojis["baehh.gif"] = 0x2620
-	emojis["bahnhof.gif"] = 0x2620
-	emojis["banane.gif"] = 0x2620
-	emojis["binwech.gif"] = 0x2620
-	emojis["welcome.gif"] = 0x2620
-	emojis["brille.GIF"] = 0x2620
-	emojis["ciao.gif"] = 0x2620
-	emojis["cool.gif"] = 0x2620
-	emojis["pro.gif"] = 0x2620
-	emojis["pro.gif"] = 0x2620
-	emojis["contra.gif"] = 0x2620
-	emojis["dance.gif"] = 0x2620
-	emojis["dance2.gif"] = 0x2620
-	emojis["danke.gif"] = 0x2620
-	emojis["denken.gif"] = 0x2620
-	emojis["desnemma.gif"] = 0x2620
-	emojis["dudu.gif"] = 0x2620
-	emojis["er.gif"] = 0x2620
-	emojis["essen.gif"] = 0x2620
-	emojis["flieg.gif"] = 0x2620
-	emojis["whistle.gif"] = 0x2620
-	emojis["whistle.gif"] = 0x2620
-	emojis["fluestern.gif"] = 0x2620
-	emojis["fluestern.gif"] = 0x2620
-	emojis["freu.gif"] = 0x2620
-	emojis["freu2.gif"] = 0x2620
-	emojis["hupps.gif"] = 0x2620
-	emojis["ck.gif"] = 0x2620
-	emojis["gespraech.gif"] = 0x2620
-	emojis["gespraech.gif"] = 0x2620
-	emojis["girlsfriends.gif"] = 0x2620
-	emojis["gutenacht.GIF"] = 0x2620
-	emojis["habenwill.gif"] = 0x2620
-	emojis["hallo.gif"] = 0x2620
-	emojis["hallo2.gif"] = 0x2620
-	emojis["hallo3.gif"] = 0x2620
-	emojis["heul.gif"] = 0x2620
-	emojis["hi.gif"] = 0x2620
-	emojis["hi5.gif"] = 0x2620
-	emojis["hihi.gif"] = 0x2620
-	emojis["hmmm.GIF"] = 0x2620
-	emojis["hops.gif"] = 0x2620
-	emojis["huebsch.gif"] = 0x2620
-	emojis["huebsch.gif"] = 0x2620
-	emojis["huhuh.gif"] = 0x2620
-	emojis["huhu.gif"] = 0x2620
-	emojis["huldig.gif"] = 0x2620
-	emojis["kotz.gif"] = 0x2620
-	emojis["huepf.gif"] = 0x2620
-	emojis["huepf.gif"] = 0x2620
-	emojis["ich.gif"] = 0x2620
-	emojis["ich neee.gif"] = 0x2620
-	emojis["ichwarsnet.gif"] = 0x2620
-	emojis["jaa.gif"] = 0x2620
-	emojis["jippi.gif"] = 0x2620
-	emojis["kaffee.gif"] = 0x2620
-	emojis["klaps.gif"] = 0x2620
-	emojis["klatschen1.gif"] = 0x2620
-	emojis["kukuck.gif"] = 0x2620
-	emojis["kizz.gif"] = 0x2620
-	emojis["kuss.gif"] = 0x2620
-	emojis["langweil.gif"] = 0x2620
-	emojis["lieb.gif"] = 0x2620
-	emojis["lieb2.gif"] = 0x2620
-	emojis["lol.gif"] = 0x2620
-	emojis["lol2.gif"] = 0x2620
-	emojis["lol3.gif"] = 0x2620
-	emojis["lol4.gif"] = 0x2620
-	emojis["lol.gif"] = 0x2620
-	emojis["maus.gif"] = 0x2620
-	emojis["merci.gif"] = 0x2620
-	emojis["mist.gif"] = 0x2620
-	emojis["moin.gif"] = 0x2620
-	emojis["na.gif"] = 0x2620
-	emojis["nachti.gif"] = 0x2620
-	emojis["necken.gif"] = 0x2620
-	emojis["necken2.gif"] = 0x2620
-	emojis["nimmdas.gif"] = 0x2620
-	emojis["nimmdas2.gif"] = 0x2620
-	emojis["no.gif"] = 0x2620
-	emojis["nochda.gif"] = 0x2620
-	emojis["ohnein.gif"] = 0x2620
-	emojis["ok.gif"] = 0x2620
-	emojis["oops.GIF"] = 0x2620
-	emojis["plem.gif"] = 0x2620
-	emojis["plot.gif"] = 0x2620
-	emojis["pn.gif"] = 0x2620
-	emojis["pssst.GIF"] = 0x2620
-	emojis["psst.gif"] = 0x2620
-	emojis["puh.gif"] = 0x2620
-	emojis["reingefallen.gif"] = 0x2620
-	emojis["rose.gif"] = 0x2620
-	emojis["rotwerd.gif"] = 0x2620
-	emojis["ruf.gif"] = 0x2620
-	emojis["schimpfen.gif"] = 0x2620
-	emojis["schleimer.gif"] = 0x2620
-	emojis["schmoll.gif"] = 0x2620
-	emojis["schoki.gif"] = 0x2620
-	emojis["shifty.gif"] = 0x2620
-	emojis["sie.gif"] = 0x2620
-	emojis["siez.gif"] = 0x2620
-	emojis["smoke.gif"] = 0x2620
-	emojis["sorry.GIF"] = 0x2620
-	emojis["spitze.GIF"] = 0x2620
-	emojis["strike.gif"] = 0x2620
-	emojis["strip.gif"] = 0x2620
-	emojis["tel.gif"] = 0x2620
-	emojis["totlach.gif"] = 0x2620
-	emojis["totlach2.gif"] = 0x2620
-	emojis["troesten.gif"] = 0x2620
-	emojis["versteck.gif"] = 0x2620
-	emojis["wanne.gif"] = 0x2620
-	emojis["warichnet.gif"] = 0x2620
-	emojis["watt.gif"] = 0x2620
-	emojis["weissnet.gif"] = 0x2620
-	emojis["wiegeil.gif"] = 0x2620
-	emojis["willich.gif"] = 0x2620
-	emojis["willich2.gif"] = 0x2620
-	emojis["wink.gif"] = 0x2620
-	emojis["wink2.gif"] = 0x2620
-	emojis["wave.gif"] = 0x2620
-	emojis["wave2.gif"] = 0x2620
-	emojis["zocken.gif"] = 0x2620
-	emojis["zug.gif"] = 0x2620
-	emojis["zunge1.GIF"] = 0x2620
-	emojis["zunge2.gif"] = 0x2620
-	emojis["zunge3.gif"] = 0x2620
-	emojis["zungeziehn.gif"] = 0x2620
-	emojis["zwinker.gif"] = 0x2620
-	emojis["aa.gif"] = 0x2620
-	emojis["ahh.gif"] = 0x2620
-	emojis["angry.gif"] = 0x2620
-	emojis["angel.gif"] = 0x2620
-	emojis["ar.gif"] = 0x2620
-	emojis["as.gif"] = 0x2620
-	emojis["av.gif"] = 0x2620
-	emojis["baby.gif"] = 0x2620
-	emojis["bd.gif"] = 0x2620
-	emojis["bike.gif"] = 0x2620
-	emojis["bo.gif"] = 0x2620
-	emojis["brumm.gif"] = 0x2620
-	emojis["bu.gif"] = 0x2620
-	emojis["bz.gif"] = 0x2620
-	emojis["chicken.gif"] = 0x2620
-	emojis["ck.gif"] = 0x2620
-	emojis["closedeyes.gif"] = 0x2620
-	emojis["cm.gif"] = 0x2620
-	emojis["cp.gif"] = 0x2620
-	emojis["dance4.gif"] = 0x2620
-	emojis["devil.gif"] = 0x2620
-	emojis["drunk.gif"] = 0x2620
-	emojis["Ele.gif"] = 0x2620
-	emojis["fan.gif"] = 0x2620
-	emojis["besen.gif"] = 0x2620
-	emojis["zwerge.gif"] = 0x2620
-	emojis["hello.gif"] = 0x2620
-	emojis["geek.gif"] = 0x2620
-	emojis["friends.gif"] = 0x2620
-	emojis["fun.gif"] = 0x2620
-	emojis["give_rose.gif"] = 0x2620
-	emojis["greeting.gif"] = 0x2620
-	emojis["hmmm.gif"] = 0x2620
-	emojis["icecream.gif"] = 0x2620
-	emojis["kiss.gif"] = 0x2620
-	emojis["kissing2.gif"] = 0x2620
-	emojis["love.gif"] = 0x2620
-	emojis["morgen.gif"] = 0x2620
-	emojis["morning1.gif"] = 0x2620
-	emojis["nacht.gif"] = 0x2620
-	emojis["noexpression.gif"] = 0x2620
-	emojis["ohmy.gif"] = 0x2620
-	emojis["plane.gif"] = 0x2620
-	emojis["read.gif"] = 0x2620
-	emojis["rofl.gif"] = 0x2620
-	emojis["skate.gif"] = 0x2620
-	emojis["kasper.gif"] = 0x2620
-	emojis["smile1.gif"] = 0x2620
-	emojis["spam.gif"] = 0x2620
-	emojis["super.gif"] = 0x2620
-	emojis["thank you.gif"] = 0x2620
-	emojis["tongue.gif"] = 0x2620
-	emojis["wizard.gif"] = 0x2620
-	emojis["wo.gif"] = 0x2620
-	emojis["yes.gif"] = 0x2620
-	emojis["FAQ.gif"] = 0x2620
-	emojis["bye2.gif"] = 0x2620
-	emojis["sorry.gif"] = 0x2620
-	emojis["klopp.gif"] = 0x2620
-	emojis["pup.gif"] = 0x2620
-	emojis["welle.gif"] = 0x2620
-	emojis["smile1.gif"] = 0x2620
-	emojis["grin.gif"] = 0x2620
-	emojis["tongue.gif"] = 0x2620
-	emojis["sad.gif"] = 0x2620
-	emojis["cry.gif"] = 0x2620
-	emojis["noexpression.gif"] = 0x2620
-	emojis["bbfriends.gif"] = 0x2620
-	emojis["bbwink.gif"] = 0x2620
-	emojis["bbgrin.gif"] = 0x2620
-	emojis["bbhat-sm.gif"] = 0x2620
-	emojis["bbhat.gif"] = 0x2620
-	emojis["lol5.gif"] = 0x2620
-	emojis["deadhorse.gif"] = 0x2620
-	emojis["spank.gif"] = 0x2620
-	emojis["yoji.gif"] = 0x2620
-	emojis["locked.gif"] = 0x2620
-	emojis["clown.gif"] = 0x2620
-	emojis["mml.gif"] = 0x2620
-	emojis["morepics.gif"] = 0x2620
-	emojis["rblocked.gif"] = 0x2620
-	emojis["maxlocked.gif"] = 0x2620
-	emojis["hslocked.gif"] = 0x2620
+	emojis["jippie.gif"] = 0xFFFD
+	emojis["abgelehnt.gif"] = 0xFFFD
+	emojis["abinsbett.gif"] = 0xFFFD
+	emojis["achlass.gif"] = 0xFFFD
+	emojis["afk.gif"] = 0xFFFD
+	emojis["augen.GIF"] = 0xFFFD
+	emojis["bad.gif"] = 0xFFFD
+	emojis["baehh.gif"] = 0xFFFD
+	emojis["baehh.gif"] = 0xFFFD
+	emojis["bahnhof.gif"] = 0xFFFD
+	emojis["banane.gif"] = 0xFFFD
+	emojis["binwech.gif"] = 0xFFFD
+	emojis["welcome.gif"] = 0xFFFD
+	emojis["brille.GIF"] = 0xFFFD
+	emojis["ciao.gif"] = 0xFFFD
+	emojis["cool.gif"] = 0xFFFD
+	emojis["pro.gif"] = 0xFFFD
+	emojis["pro.gif"] = 0xFFFD
+	emojis["contra.gif"] = 0xFFFD
+	emojis["dance.gif"] = 0xFFFD
+	emojis["dance2.gif"] = 0xFFFD
+	emojis["danke.gif"] = 0xFFFD
+	emojis["denken.gif"] = 0xFFFD
+	emojis["desnemma.gif"] = 0xFFFD
+	emojis["dudu.gif"] = 0xFFFD
+	emojis["er.gif"] = 0xFFFD
+	emojis["essen.gif"] = 0xFFFD
+	emojis["flieg.gif"] = 0xFFFD
+	emojis["whistle.gif"] = 0xFFFD
+	emojis["whistle.gif"] = 0xFFFD
+	emojis["fluestern.gif"] = 0xFFFD
+	emojis["fluestern.gif"] = 0xFFFD
+	emojis["freu.gif"] = 0xFFFD
+	emojis["freu2.gif"] = 0xFFFD
+	emojis["hupps.gif"] = 0xFFFD
+	emojis["ck.gif"] = 0xFFFD
+	emojis["gespraech.gif"] = 0xFFFD
+	emojis["gespraech.gif"] = 0xFFFD
+	emojis["girlsfriends.gif"] = 0xFFFD
+	emojis["gutenacht.GIF"] = 0xFFFD
+	emojis["habenwill.gif"] = 0xFFFD
+	emojis["hallo.gif"] = 0xFFFD
+	emojis["hallo2.gif"] = 0xFFFD
+	emojis["hallo3.gif"] = 0xFFFD
+	emojis["heul.gif"] = 0xFFFD
+	emojis["hi.gif"] = 0xFFFD
+	emojis["hi5.gif"] = 0xFFFD
+	emojis["hihi.gif"] = 0xFFFD
+	emojis["hmmm.GIF"] = 0xFFFD
+	emojis["hops.gif"] = 0xFFFD
+	emojis["huebsch.gif"] = 0xFFFD
+	emojis["huebsch.gif"] = 0xFFFD
+	emojis["huhuh.gif"] = 0xFFFD
+	emojis["huhu.gif"] = 0xFFFD
+	emojis["huldig.gif"] = 0xFFFD
+	emojis["kotz.gif"] = 0xFFFD
+	emojis["huepf.gif"] = 0xFFFD
+	emojis["huepf.gif"] = 0xFFFD
+	emojis["ich.gif"] = 0xFFFD
+	emojis["ich neee.gif"] = 0xFFFD
+	emojis["ichwarsnet.gif"] = 0xFFFD
+	emojis["jaa.gif"] = 0xFFFD
+	emojis["jippi.gif"] = 0xFFFD
+	emojis["kaffee.gif"] = 0xFFFD
+	emojis["klaps.gif"] = 0xFFFD
+	emojis["klatschen1.gif"] = 0xFFFD
+	emojis["kukuck.gif"] = 0xFFFD
+	emojis["kizz.gif"] = 0xFFFD
+	emojis["kuss.gif"] = 0xFFFD
+	emojis["langweil.gif"] = 0xFFFD
+	emojis["lieb.gif"] = 0xFFFD
+	emojis["lieb2.gif"] = 0xFFFD
+	emojis["lol.gif"] = 0xFFFD
+	emojis["lol2.gif"] = 0xFFFD
+	emojis["lol3.gif"] = 0xFFFD
+	emojis["lol4.gif"] = 0xFFFD
+	emojis["lol.gif"] = 0xFFFD
+	emojis["maus.gif"] = 0xFFFD
+	emojis["merci.gif"] = 0xFFFD
+	emojis["mist.gif"] = 0xFFFD
+	emojis["moin.gif"] = 0xFFFD
+	emojis["na.gif"] = 0xFFFD
+	emojis["nachti.gif"] = 0xFFFD
+	emojis["necken.gif"] = 0xFFFD
+	emojis["necken2.gif"] = 0xFFFD
+	emojis["nimmdas.gif"] = 0xFFFD
+	emojis["nimmdas2.gif"] = 0xFFFD
+	emojis["no.gif"] = 0xFFFD
+	emojis["nochda.gif"] = 0xFFFD
+	emojis["ohnein.gif"] = 0xFFFD
+	emojis["ok.gif"] = 0xFFFD
+	emojis["oops.GIF"] = 0xFFFD
+	emojis["plem.gif"] = 0xFFFD
+	emojis["plot.gif"] = 0xFFFD
+	emojis["pn.gif"] = 0xFFFD
+	emojis["pssst.GIF"] = 0xFFFD
+	emojis["psst.gif"] = 0xFFFD
+	emojis["puh.gif"] = 0xFFFD
+	emojis["reingefallen.gif"] = 0xFFFD
+	emojis["rose.gif"] = 0xFFFD
+	emojis["rotwerd.gif"] = 0xFFFD
+	emojis["ruf.gif"] = 0xFFFD
+	emojis["schimpfen.gif"] = 0xFFFD
+	emojis["schleimer.gif"] = 0xFFFD
+	emojis["schmoll.gif"] = 0xFFFD
+	emojis["schoki.gif"] = 0xFFFD
+	emojis["shifty.gif"] = 0xFFFD
+	emojis["sie.gif"] = 0xFFFD
+	emojis["siez.gif"] = 0xFFFD
+	emojis["smoke.gif"] = 0xFFFD
+	emojis["sorry.GIF"] = 0xFFFD
+	emojis["spitze.GIF"] = 0xFFFD
+	emojis["strike.gif"] = 0xFFFD
+	emojis["strip.gif"] = 0xFFFD
+	emojis["tel.gif"] = 0xFFFD
+	emojis["totlach.gif"] = 0xFFFD
+	emojis["totlach2.gif"] = 0xFFFD
+	emojis["troesten.gif"] = 0xFFFD
+	emojis["versteck.gif"] = 0xFFFD
+	emojis["wanne.gif"] = 0xFFFD
+	emojis["warichnet.gif"] = 0xFFFD
+	emojis["watt.gif"] = 0xFFFD
+	emojis["weissnet.gif"] = 0xFFFD
+	emojis["wiegeil.gif"] = 0xFFFD
+	emojis["willich.gif"] = 0xFFFD
+	emojis["willich2.gif"] = 0xFFFD
+	emojis["wink.gif"] = 0xFFFD
+	emojis["wink2.gif"] = 0xFFFD
+	emojis["wave.gif"] = 0xFFFD
+	emojis["wave2.gif"] = 0xFFFD
+	emojis["zocken.gif"] = 0xFFFD
+	emojis["zug.gif"] = 0xFFFD
+	emojis["zunge1.GIF"] = 0xFFFD
+	emojis["zunge2.gif"] = 0xFFFD
+	emojis["zunge3.gif"] = 0xFFFD
+	emojis["zungeziehn.gif"] = 0xFFFD
+	emojis["zwinker.gif"] = 0xFFFD
+	emojis["aa.gif"] = 0xFFFD
+	emojis["ahh.gif"] = 0xFFFD
+	emojis["angry.gif"] = 0xFFFD
+	emojis["angel.gif"] = 0xFFFD
+	emojis["ar.gif"] = 0xFFFD
+	emojis["as.gif"] = 0xFFFD
+	emojis["av.gif"] = 0xFFFD
+	emojis["baby.gif"] = 0xFFFD
+	emojis["bd.gif"] = 0xFFFD
+	emojis["bike.gif"] = 0xFFFD
+	emojis["bo.gif"] = 0xFFFD
+	emojis["brumm.gif"] = 0xFFFD
+	emojis["bu.gif"] = 0xFFFD
+	emojis["bz.gif"] = 0xFFFD
+	emojis["chicken.gif"] = 0xFFFD
+	emojis["ck.gif"] = 0xFFFD
+	emojis["closedeyes.gif"] = 0xFFFD
+	emojis["cm.gif"] = 0xFFFD
+	emojis["cp.gif"] = 0xFFFD
+	emojis["dance4.gif"] = 0xFFFD
+	emojis["devil.gif"] = 0xFFFD
+	emojis["drunk.gif"] = 0xFFFD
+	emojis["Ele.gif"] = 0xFFFD
+	emojis["fan.gif"] = 0xFFFD
+	emojis["besen.gif"] = 0xFFFD
+	emojis["zwerge.gif"] = 0xFFFD
+	emojis["hello.gif"] = 0xFFFD
+	emojis["geek.gif"] = 0xFFFD
+	emojis["friends.gif"] = 0xFFFD
+	emojis["fun.gif"] = 0xFFFD
+	emojis["give_rose.gif"] = 0xFFFD
+	emojis["greeting.gif"] = 0xFFFD
+	emojis["hmmm.gif"] = 0xFFFD
+	emojis["icecream.gif"] = 0xFFFD
+	emojis["kiss.gif"] = 0xFFFD
+	emojis["kissing2.gif"] = 0xFFFD
+	emojis["love.gif"] = 0xFFFD
+	emojis["morgen.gif"] = 0xFFFD
+	emojis["morning1.gif"] = 0xFFFD
+	emojis["nacht.gif"] = 0xFFFD
+	emojis["noexpression.gif"] = 0xFFFD
+	emojis["ohmy.gif"] = 0xFFFD
+	emojis["plane.gif"] = 0xFFFD
+	emojis["read.gif"] = 0xFFFD
+	emojis["rofl.gif"] = 0xFFFD
+	emojis["skate.gif"] = 0xFFFD
+	emojis["kasper.gif"] = 0xFFFD
+	emojis["smile1.gif"] = 0xFFFD
+	emojis["spam.gif"] = 0xFFFD
+	emojis["super.gif"] = 0xFFFD
+	emojis["thank you.gif"] = 0xFFFD
+	emojis["tongue.gif"] = 0xFFFD
+	emojis["wizard.gif"] = 0xFFFD
+	emojis["wo.gif"] = 0xFFFD
+	emojis["yes.gif"] = 0xFFFD
+	emojis["FAQ.gif"] = 0xFFFD
+	emojis["bye2.gif"] = 0xFFFD
+	emojis["sorry.gif"] = 0xFFFD
+	emojis["klopp.gif"] = 0xFFFD
+	emojis["pup.gif"] = 0xFFFD
+	emojis["welle.gif"] = 0xFFFD
+	emojis["smile1.gif"] = 0xFFFD
+	emojis["grin.gif"] = 0xFFFD
+	emojis["tongue.gif"] = 0xFFFD
+	emojis["sad.gif"] = 0xFFFD
+	emojis["cry.gif"] = 0xFFFD
+	emojis["noexpression.gif"] = 0xFFFD
+	emojis["bbfriends.gif"] = 0xFFFD
+	emojis["bbwink.gif"] = 0xFFFD
+	emojis["bbgrin.gif"] = 0xFFFD
+	emojis["bbhat-sm.gif"] = 0xFFFD
+	emojis["bbhat.gif"] = 0xFFFD
+	emojis["lol5.gif"] = 0xFFFD
+	emojis["deadhorse.gif"] = 0xFFFD
+	emojis["spank.gif"] = 0xFFFD
+	emojis["yoji.gif"] = 0xFFFD
+	emojis["locked.gif"] = 0xFFFD
+	emojis["clown.gif"] = 0xFFFD
+	emojis["mml.gif"] = 0xFFFD
+	emojis["morepics.gif"] = 0xFFFD
+	emojis["rblocked.gif"] = 0xFFFD
+	emojis["maxlocked.gif"] = 0xFFFD
+	emojis["hslocked.gif"] = 0xFFFD
 }
 
 func emojify(s string) string {
@@ -535,4 +528,14 @@ func emojify(s string) string {
 	}
 
 	return s
+}
+
+func sanitizeJSON(rd io.Reader) ([]byte, error) {
+	body, err := ioutil.ReadAll(rd)
+	if err != nil {
+		return nil, err
+	}
+	// Replace tabs in the response. Tabs are not allowed in the json standard, but the send it anyway.
+	// Probaby a shitty(custom) json encoder
+	return bytes.Replace(body, []byte("\t"), []byte("    "), -1), nil
 }
